@@ -1,0 +1,55 @@
+import { mkdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+
+export interface Paths {
+  dataDir: string;
+  dbFile: string;
+  secretsFile: string;
+  tasksDir: string;
+  worktreesDir: string;
+  taskDir(taskId: string): string;
+  /** Kept after archival. */
+  artifactDir(taskId: string): string;
+  /** Transcripts and scratch output; purged on archival. */
+  runsDir(taskId: string): string;
+  runLog(taskId: string, runId: number): string;
+  runOutputFile(taskId: string, runId: number): string;
+}
+
+export function createPaths(dataDir: string): Paths {
+  const tasksDir = join(dataDir, "tasks");
+  return {
+    dataDir,
+    dbFile: join(dataDir, "db.sqlite"),
+    secretsFile: join(dataDir, "secrets.json"),
+    tasksDir,
+    worktreesDir: join(dataDir, "worktrees"),
+    taskDir: (taskId) => join(tasksDir, taskId),
+    artifactDir: (taskId) => join(tasksDir, taskId, "artifacts"),
+    runsDir: (taskId) => join(tasksDir, taskId, "runs"),
+    runLog: (taskId, runId) => join(tasksDir, taskId, "runs", `${runId}.jsonl`),
+    runOutputFile: (taskId, runId) => join(tasksDir, taskId, "runs", `${runId}.outputs.json`),
+  };
+}
+
+export function ensureBaseDirs(paths: Paths): void {
+  mkdirSync(paths.tasksDir, { recursive: true });
+  mkdirSync(paths.worktreesDir, { recursive: true });
+}
+
+/** Resolves `name` under `root`, rejecting anything that escapes it. */
+export function resolveInside(root: string, name: string): string {
+  const target = resolve(root, name);
+  const rel = relative(root, target);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`Invalid artifact name: ${name}`);
+  }
+  return target;
+}
+
+export async function purgeTranscripts(paths: Paths, taskId: string): Promise<void> {
+  await rm(paths.runsDir(taskId), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+    (err: unknown) => console.warn(`Could not purge transcripts for task ${taskId}:`, err),
+  );
+}
