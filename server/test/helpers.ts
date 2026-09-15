@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDefaultRegistry } from "../src/actions/registry";
 import { type AppContext, bootstrap } from "../src/bootstrap";
-import { insertWorkflow, type SeedWorkflow } from "../src/seed/templates";
+import { insertWorkflow, type SeedWorkflow } from "../src/seed/workflows";
 import { testActions } from "./test-actions";
 
 export interface Harness extends AppContext {
@@ -22,8 +22,8 @@ export function createHarness(
     {
       dataDir,
       host: "127.0.0.1",
-      port: 4280,
-      devOriginPorts: [5173],
+      port: 2711,
+      devOriginPorts: [2712],
       maxConcurrentLongRuns: options.maxConcurrentLongRuns ?? 3,
     },
     { registry, seed: options.seed ?? false, http: options.http },
@@ -75,11 +75,13 @@ export function inspect(h: Harness) {
     detail,
     currentVisit,
     stageName: (taskId: string) => currentVisit(taskId).stageName,
-    phase: (taskId: string, name: string) => {
-      const phase = currentVisit(taskId).phases.find((p) => p.name === name);
-      if (!phase) throw new Error(`No phase named ${name}`);
-      return phase;
-    },
+    /** The newest attempt of an action in the task's current stage visit. */
+    latest: (taskId: string, key: string) =>
+      currentVisit(taskId)
+        .runs.filter((run) => run.bindingKey === key)
+        .at(-1),
+    /** Every action in the current visit has settled. */
+    visitDone: (taskId: string) => currentVisit(taskId).completedAt !== null,
     runs: (taskId: string, key: string) =>
       detail(taskId)
         .visits.flatMap((v) => v.runs)

@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ActionTypeInfo, ConnectionInfo, TaskDetail, WorkflowDef } from "@wm/shared";
+import type { ActionTypeInfo, ConnectionInfo, TaskDetail, TaskDiff, WorkflowDef } from "@wm/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/api/app";
 import { createHarness, type Harness, removeDir } from "./helpers";
@@ -27,12 +28,12 @@ const post = (path: string, body?: unknown) =>
 describe("api", () => {
   it("only accepts local hosts and origins", async () => {
     expect((await h.app.request("/api/health")).status).toBe(200);
-    expect((await h.app.request("http://evil.example:4280/api/health")).status).toBe(403);
+    expect((await h.app.request("http://evil.example:2711/api/health")).status).toBe(403);
     expect((await h.app.request("/api/health", { headers: { origin: "https://evil.example" } })).status).toBe(403);
     expect((await h.app.request("/api/health", { headers: { origin: "http://localhost:9999" } })).status).toBe(403);
     expect((await h.app.request("/api/health", { headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
-    expect((await h.app.request("/api/health", { headers: { origin: "http://localhost:5173" } })).status).toBe(200);
-    expect((await h.app.request("/api/health", { headers: { origin: "http://127.0.0.1:4280" } })).status).toBe(200);
+    expect((await h.app.request("/api/health", { headers: { origin: "http://localhost:2712" } })).status).toBe(200);
+    expect((await h.app.request("/api/health", { headers: { origin: "http://127.0.0.1:2711" } })).status).toBe(200);
   });
 
   it("creates, lists and moves tasks", async () => {
@@ -80,8 +81,10 @@ describe("api", () => {
       config: h.config,
       agents: h.agents,
       connections: h.connections,
-      templates: h.templates,
+      workflows: h.workflows,
       repos: h.repos,
+      questions: h.questions,
+      tickets: h.tickets,
       archiveTask: h.archiveTask,
       webDist: dist,
     });
@@ -98,7 +101,7 @@ describe("api", () => {
     removeDir(dist);
   });
 
-  it("creates, edits and deletes templates", async () => {
+  it("creates, edits and deletes workflows", async () => {
     const created = await post("/api/workflows", { name: "From API" });
     expect(created.status).toBe(201);
     const workflow = (await created.json()) as WorkflowDef;
@@ -114,12 +117,20 @@ describe("api", () => {
       name: "Renamed",
       description: "",
       updatedAt: workflow.updatedAt,
-      stages: [{ id: workflow.stages[0]!.id, name: "Todo", phases: [{ id: crypto.randomUUID(), name: "Do it", completion: "manual" }] }],
+      stages: [
+        {
+          id: workflow.stages[0]!.id,
+          name: "Todo",
+          bindings: [{ id: crypto.randomUUID(), key: "doIt", label: "Do it", actionType: "approval", config: {} }],
+        },
+      ],
     });
     expect(renamed.status).toBe(200);
     const saved = (await renamed.json()) as WorkflowDef;
     expect(saved.name).toBe("Renamed");
-    expect(saved.stages[0]!.phases.map((phase) => phase.name)).toEqual(["Do it"]);
+    expect(saved.stages[0]!.bindings.map((binding) => [binding.label, binding.config])).toEqual([
+      ["Do it", { instructions: "", sendBackTo: "", askForNote: true }],
+    ]);
 
     // Same body again: the updatedAt it carries is now stale.
     expect((await put({ name: "Again", description: "", updatedAt: workflow.updatedAt, stages: [] })).status).toBe(400);
@@ -128,7 +139,17 @@ describe("api", () => {
     expect((await h.app.request(`/api/workflows/${workflow.id}`)).status).toBe(404);
   });
 
-  it("publishes the action catalogue and template usage", async () => {
+  it("deletes a workflow that tasks use only when forced", async () => {
+    const workflow = (await (await post("/api/workflows", { name: "Busy" })).json()) as WorkflowDef;
+    const task = h.engine.createTask({ workflowId: workflow.id, title: "In the way" });
+    const remove = (query = "") => h.app.request(`/api/workflows/${workflow.id}${query}`, { method: "DELETE" });
+
+    expect((await remove()).status).toBe(409);
+    expect((await remove("?force=true")).status).toBe(204);
+    expect(h.engine.findTask(task.id)).toBeUndefined();
+  });
+
+  it("publishes the action catalogue and workflow usage", async () => {
     const types = (await (await h.app.request("/api/action-types")).json()) as { type: string; fields: unknown[] }[];
     expect(types.map((type) => type.type)).toContain("shell");
     expect(types.every((type) => type.fields.length > 0)).toBe(true);
@@ -177,6 +198,51 @@ describe("api", () => {
     expect(jira.connectionType).toBe("jira");
     expect(jira.fields[0]).toMatchObject({ name: "connectionId", kind: "connection" });
     expect(types.find((type) => type.type === "shell")?.connectionType).toBeNull();
+  });
+
+  it("diffs the task's branch, uncommitted and untracked work included", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wm-repo-"));
+    const gitIn = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+    const commit = (message: string) =>
+      gitIn("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", message);
+    gitIn("init", "-b", "main");
+    gitIn("config", "core.autocrlf", "false");
+    writeFileSync(join(repo, "README.md"), "# test\n");
+    gitIn("add", ".");
+    commit("init");
+    gitIn("checkout", "-b", "wm/feature");
+    writeFileSync(join(repo, "app.ts"), "export const a = 1;\n");
+    gitIn("add", ".");
+    commit("add app");
+    writeFileSync(join(repo, "README.md"), "# test\nnow with notes\n");
+    writeFileSync(join(repo, "scratch.txt"), "not added\n");
+
+    const [feature] = h.engine.listWorkflows();
+    const task = h.engine.createTask({ workflowId: feature!.id, title: "Diff me", repoPath: repo });
+    h.engine.setTaskGitInfo(task.id, { branch: "wm/feature", baseBranch: "main", worktreePath: repo });
+
+    const response = await h.app.request(`/api/tasks/${task.id}/diff`);
+    expect(response.status).toBe(200);
+    const diff = (await response.json()) as TaskDiff;
+    expect(diff).toMatchObject({ branch: "wm/feature", baseBranch: "main", uncommitted: true, truncated: false });
+    expect(diff.files.map((file) => [file.path, file.status, file.untracked])).toEqual([
+      ["README.md", "modified", false],
+      ["app.ts", "added", false],
+      ["scratch.txt", "added", true],
+    ]);
+    expect([diff.insertions, diff.deletions]).toEqual([2, 0]);
+    expect(diff.patch).toContain("+export const a = 1;");
+    expect(diff.patch).toContain("+now with notes");
+
+    removeDir(repo);
+  });
+
+  it("says why a task has no diff to show", async () => {
+    const [feature] = h.engine.listWorkflows();
+    const task = h.engine.createTask({ workflowId: feature!.id, title: "Nothing to review" });
+    const response = await h.app.request(`/api/tasks/${task.id}/diff`);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toContain("no repository");
   });
 
   it("serves artifacts as plain text and blocks path traversal", async () => {

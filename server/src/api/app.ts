@@ -3,20 +3,25 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import {
   AGENT_IDS,
+  agentDefaultsSchema,
   type ArtifactInfo,
+  answerQuestionSchema,
   archiveTaskSchema,
   createConnectionSchema,
   createTaskSchema,
   createWorkflowSchema,
+  draftFromTicketSchema,
+  isAgentId,
   saveWorkflowSchema,
   testAgentSchema,
   updateAgentSchema,
   listTasksQuerySchema,
   moveTaskSchema,
   type RunLogLine,
+  requestChangesSchema,
   retryRunSchema,
   type ServerEvent,
-  triggerBindingSchema,
+  sendBackSchema,
   updateConnectionSchema,
   updateTaskSchema,
 } from "@wm/shared";
@@ -28,8 +33,12 @@ import type { AppConfig } from "../config";
 import { EngineError, type Engine, type InternalEvent } from "../engine/engine";
 import { type Paths, resolveInside } from "../paths";
 import type { ConnectionService } from "../services/connections";
+import { taskDiff } from "../services/diff";
+import type { QuestionService } from "../services/questions";
 import type { RepoService } from "../services/repos";
-import type { TemplateService } from "../services/templates";
+import type { WorkflowService } from "../services/workflows";
+import type { TicketDraftService } from "../services/ticket-draft";
+import { mountMcp } from "./mcp";
 import { localOnly } from "./security";
 import { serveWeb } from "./static";
 
@@ -39,8 +48,10 @@ export interface AppDeps {
   config: AppConfig;
   agents: AgentService;
   connections: ConnectionService;
-  templates: TemplateService;
+  workflows: WorkflowService;
   repos: RepoService;
+  questions: QuestionService;
+  tickets: TicketDraftService;
   archiveTask(taskId: string, options?: { force?: boolean }): Promise<void>;
   /** Built web app to serve at `/`, if present. */
   webDist?: string;
@@ -50,7 +61,19 @@ const SERVER_EVENT_TYPES = new Set<InternalEvent["type"]>(["task.changed", "run.
 const runIdSchema = z.coerce.number().int().positive();
 const agentIdSchema = z.enum(AGENT_IDS);
 
-export function createApp({ engine, paths, config, agents, connections, templates, repos, archiveTask, webDist }: AppDeps): Hono {
+export function createApp({
+  engine,
+  paths,
+  config,
+  agents,
+  connections,
+  workflows,
+  repos,
+  questions,
+  tickets,
+  archiveTask,
+  webDist,
+}: AppDeps): Hono {
   const app = new Hono();
   app.use("*", localOnly({ allowedOriginPorts: [config.port, ...config.devOriginPorts] }));
 
@@ -68,19 +91,20 @@ export function createApp({ engine, paths, config, agents, connections, template
   app.get("/api/workflows/:id", (c) => c.json(engine.getWorkflow(c.req.param("id"))));
   app.get("/api/workflows/:id/usage", (c) => c.json(engine.workflowUsage(engine.getWorkflow(c.req.param("id")).id)));
 
-  app.post("/api/workflows", async (c) => c.json(templates.create(createWorkflowSchema.parse(await readJson(c))), 201));
+  app.post("/api/workflows", async (c) => c.json(workflows.create(createWorkflowSchema.parse(await readJson(c))), 201));
 
   app.put("/api/workflows/:id", async (c) =>
-    c.json(await templates.save(c.req.param("id"), saveWorkflowSchema.parse(await readJson(c)))),
+    c.json(await workflows.save(c.req.param("id"), saveWorkflowSchema.parse(await readJson(c)))),
   );
 
-  app.delete("/api/workflows/:id", (c) => {
-    templates.remove(c.req.param("id"));
+  // ?force=true also deletes the tasks still using the workflow.
+  app.delete("/api/workflows/:id", async (c) => {
+    await workflows.remove(c.req.param("id"), { force: c.req.query("force") === "true" });
     return c.body(null, 204);
   });
 
-  // ---- action catalogue (drives the template editor's forms)
-  app.get("/api/action-types", (c) => c.json(templates.actionTypes()));
+  // ---- action catalogue (drives the workflow editor's forms)
+  app.get("/api/action-types", (c) => c.json(workflows.actionTypes()));
 
   // ---- repositories (source for the task form's dropdowns)
   app.get("/api/repos", (c) => c.json(repos.list()));
@@ -114,11 +138,15 @@ export function createApp({ engine, paths, config, agents, connections, template
       const repoPath = engine.getTask(id).repoPath;
       if (repoPath) await repos.validate(repoPath, patch.baseBranch);
     }
-    if (patch.modelOverride) {
-      // The override applies to every coding-agent action on the task, so it only has to be
-      // valid for the agent it will actually run under.
-      const agent = patch.agentOverride ?? engine.getTask(id).agentOverride;
-      const error = await agents.validateModelFor(agent, patch.modelOverride);
+    if (patch.modelOverride || patch.effortOverride) {
+      // Overrides apply to every coding-agent action on the task, so they only have to be valid
+      // for the agent they will actually run under — and the effort for the model it pairs with.
+      const task = engine.getTask(id);
+      const error = await agents.validateChoiceFor(
+        patch.agentOverride === undefined ? task.agentOverride : patch.agentOverride,
+        patch.modelOverride === undefined ? task.modelOverride : patch.modelOverride,
+        patch.effortOverride === undefined ? task.effortOverride : patch.effortOverride,
+      );
       if (error) throw new EngineError(error);
     }
     engine.updateTask(id, patch);
@@ -132,21 +160,10 @@ export function createApp({ engine, paths, config, agents, connections, template
     return c.json(engine.getTaskDetail(id));
   });
 
-  app.post("/api/tasks/:id/phases/:phaseStateId/complete", (c) => {
+  // Runs the current stage's actions when the task was moved in without running them.
+  app.post("/api/tasks/:id/start", (c) => {
     const id = c.req.param("id");
-    engine.completePhase(id, c.req.param("phaseStateId"));
-    return c.json(engine.getTaskDetail(id));
-  });
-
-  app.post("/api/tasks/:id/stage/complete", (c) => {
-    const id = c.req.param("id");
-    engine.completeStage(id);
-    return c.json(engine.getTaskDetail(id));
-  });
-
-  app.post("/api/tasks/:id/bindings/:bindingId/trigger", async (c) => {
-    const id = c.req.param("id");
-    engine.triggerManual(id, c.req.param("bindingId"), triggerBindingSchema.parse(await readJson(c)));
+    engine.startActions(id);
     return c.json(engine.getTaskDetail(id));
   });
 
@@ -155,6 +172,9 @@ export function createApp({ engine, paths, config, agents, connections, template
     await archiveTask(id, archiveTaskSchema.parse(await readJson(c)));
     return c.json(engine.getTaskDetail(id));
   });
+
+  // ---- the branch's diff, for the stages that ask you to review it
+  app.get("/api/tasks/:id/diff", async (c) => c.json(await taskDiff(engine.getTask(c.req.param("id")))));
 
   // ---- artifacts
   app.get("/api/tasks/:id/artifacts", async (c) => {
@@ -199,17 +219,53 @@ export function createApp({ engine, paths, config, agents, connections, template
 
   app.post("/api/runs/:id/retry", async (c) => {
     const { overrides } = retryRunSchema.parse(await readJson(c));
-    if (overrides?.model) {
-      const error = await agents.validateModelFor(overrides.agent as string | null, String(overrides.model));
+    if (overrides?.model || overrides?.effort) {
+      const error = await agents.validateChoiceFor(
+        overrides.agent as string | null,
+        String(overrides.model ?? ""),
+        String(overrides.effort ?? ""),
+      );
       if (error) throw new EngineError(error);
     }
     const retry = engine.retryRun(runIdSchema.parse(c.req.param("id")), overrides);
     return c.json(engine.getTaskDetail(retry.taskId));
   });
 
+  // "Try now" on a run waiting for a usage limit: the user expects the limit has already lifted.
+  app.post("/api/runs/:id/resume", (c) => {
+    const run = engine.getRun(runIdSchema.parse(c.req.param("id")));
+    const agent = run.outputs?.agent;
+    engine.resumeQuotaRun(run.id);
+    if (isAgentId(agent)) agents.clearQuotaHold(agent);
+    return c.json(engine.getTaskDetail(run.taskId));
+  });
+
   app.post("/api/runs/:id/cancel", (c) => {
     const run = engine.getRun(runIdSchema.parse(c.req.param("id")));
     engine.cancelRun(run.id);
+    return c.json(engine.getTaskDetail(run.taskId));
+  });
+
+  app.post("/api/runs/:id/skip", (c) => {
+    const run = engine.skipRun(runIdSchema.parse(c.req.param("id")));
+    return c.json(engine.getTaskDetail(run.taskId));
+  });
+
+  app.post("/api/runs/:id/approve", (c) => {
+    const run = engine.approveRun(runIdSchema.parse(c.req.param("id")));
+    return c.json(engine.getTaskDetail(run.taskId));
+  });
+
+  // "Request changes" at an agent's approval: the same run carries on with what you asked for.
+  app.post("/api/runs/:id/request-changes", async (c) => {
+    const { note } = requestChangesSchema.parse(await readJson(c));
+    const run = engine.requestChanges(runIdSchema.parse(c.req.param("id")), note);
+    return c.json(engine.getTaskDetail(run.taskId));
+  });
+
+  app.post("/api/runs/:id/send-back", async (c) => {
+    const run = engine.getRun(runIdSchema.parse(c.req.param("id")));
+    engine.sendBack(run.id, sendBackSchema.parse(await readJson(c)));
     return c.json(engine.getTaskDetail(run.taskId));
   });
 
@@ -223,10 +279,15 @@ export function createApp({ engine, paths, config, agents, connections, template
     return c.json(await agents.status(id));
   });
 
+  app.put("/api/agents/:id/defaults", async (c) => {
+    const id = agentIdSchema.parse(c.req.param("id"));
+    await agents.setDefaults(id, agentDefaultsSchema.parse(await readJson(c)));
+    return c.json(await agents.status(id));
+  });
+
   app.post("/api/agents/:id/test", async (c) => {
     const id = agentIdSchema.parse(c.req.param("id"));
-    const { model } = testAgentSchema.parse(await readJson(c));
-    return c.json(await agents.test(id, model));
+    return c.json(await agents.test(id, testAgentSchema.parse(await readJson(c))));
   });
 
   // ---- connections (credentials live in secrets.json; secret values are never returned)
@@ -245,6 +306,23 @@ export function createApp({ engine, paths, config, agents, connections, template
   });
 
   app.post("/api/connections/:id/test", async (c) => c.json(await connections.test(c.req.param("id"))));
+
+  // ---- drafting a new task's title and description from its linked ticket
+  app.post("/api/tickets/draft", async (c) => c.json(await tickets.draft(draftFromTicketSchema.parse(await readJson(c)).link)));
+  app.get("/api/settings/ticket-draft", (c) => c.json(tickets.getSettings()));
+  app.put("/api/settings/ticket-draft", async (c) => c.json(await tickets.saveSettings(await readJson(c))));
+
+  // ---- questions a running agent is blocked on
+  app.get("/api/questions", (c) => c.json(questions.pending()));
+
+  app.post("/api/questions/:id/answer", async (c) => {
+    const { answers, skip } = answerQuestionSchema.parse(await readJson(c));
+    const taskId = questions.answer(c.req.param("id"), { answers, skip });
+    return c.json(engine.getTaskDetail(taskId));
+  });
+
+  // The agent's own channel for asking. Scoped to one run by the token in the path.
+  mountMcp(app, questions);
 
   // ---- live updates
   app.get("/api/events", (c) =>

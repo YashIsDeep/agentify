@@ -53,3 +53,10 @@ export async function purgeTranscripts(paths: Paths, taskId: string): Promise<vo
     (err: unknown) => console.warn(`Could not purge transcripts for task ${taskId}:`, err),
   );
 }
+
+/** Everything on disk for a task, artifacts included — for tasks deleted outright. */
+export async function purgeTaskDir(paths: Paths, taskId: string): Promise<void> {
+  await rm(paths.taskDir(taskId), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+    (err: unknown) => console.warn(`Could not delete the files of task ${taskId}:`, err),
+  );
+}
