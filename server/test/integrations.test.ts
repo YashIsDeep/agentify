@@ -36,7 +36,6 @@ async function runAction(
           {
             key: "notify",
             label: "Notify",
-            trigger: "stage.entered",
             actionType: action.actionType,
             config: { ...action.config, connectionId: created.id },
           },
@@ -73,7 +72,7 @@ describe("jira-transition", () => {
     expect(transition?.body).toEqual({ transition: { id: "31" } });
     expect(transition?.headers.authorization).toBe(`Basic ${Buffer.from("me@x.com:t").toString("base64")}`);
 
-    // Comments are Atlassian Document Format, with the template already rendered.
+    // Comments are Atlassian Document Format, with the workflow already rendered.
     const comment = calls.find((call) => call.path.endsWith("/comment"));
     expect(comment?.body.body.content[0].content[0].text).toBe("Started by Notify");
   });

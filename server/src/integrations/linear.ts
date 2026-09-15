@@ -8,6 +8,8 @@ export interface LinearIssue {
   id: string;
   identifier: string;
   title: string;
+  /** Markdown. */
+  description?: string | null;
   url: string;
   state: { id: string; name: string } | null;
   team: { id: string; key: string; states: { nodes: { id: string; name: string }[] } };
@@ -53,7 +55,7 @@ export class LinearClient {
     const data = await this.graphql<{ issues: { nodes: LinearIssue[] } }>(
       `query Issue($team: String!, $number: Float!) {
         issues(filter: { team: { key: { eq: $team } }, number: { eq: $number } }, first: 1) {
-          nodes { id identifier title url state { id name } team { id key states(first: 100) { nodes { id name } } } }
+          nodes { id identifier title description url state { id name } team { id key states(first: 100) { nodes { id name } } } }
         }
       }`,
       { team, number },

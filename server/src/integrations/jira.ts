@@ -14,9 +14,25 @@ export interface JiraIssue {
   fields?: { summary?: string; status?: { name?: string } };
 }
 
+/** What a person reads on the ticket, for drafting a task from it. */
+export interface JiraIssueContent {
+  key: string;
+  fields?: {
+    summary?: string;
+    /** Atlassian Document Format in REST v3. */
+    description?: unknown;
+    issuetype?: { name?: string };
+    status?: { name?: string };
+    priority?: { name?: string };
+    labels?: string[];
+    parent?: { key?: string; fields?: { summary?: string } };
+  };
+}
+
 /** Jira Cloud REST v3, authenticated with an API token (Basic email:token). */
 export class JiraClient {
-  private readonly baseUrl: string;
+  /** The site's origin, e.g. https://team.atlassian.net. */
+  readonly baseUrl: string;
   private readonly auth: string;
 
   constructor(
@@ -45,6 +61,13 @@ export class JiraClient {
 
   issue(key: string, signal?: AbortSignal): Promise<JiraIssue> {
     return this.request<JiraIssue>(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,status`, { signal });
+  }
+
+  issueContent(key: string, signal?: AbortSignal): Promise<JiraIssueContent> {
+    return this.request<JiraIssueContent>(
+      `/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,description,issuetype,status,priority,labels,parent`,
+      { signal },
+    );
   }
 
   async transitions(key: string, signal?: AbortSignal): Promise<JiraTransition[]> {
@@ -106,6 +129,77 @@ function normalizeBaseUrl(value: string): string {
     return new URL(withScheme).origin;
   } catch {
     throw new Error(`"${value}" is not a valid Jira site URL`);
+  }
+}
+
+interface AdfNode {
+  type?: string;
+  text?: string;
+  attrs?: Record<string, unknown>;
+  marks?: { type?: string; attrs?: Record<string, unknown> }[];
+  content?: AdfNode[];
+}
+
+/** Flattens an Atlassian Document Format description into Markdown for reading. */
+export function adfToText(document: unknown): string {
+  return renderAdf(document, 0).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function renderAdf(value: unknown, depth: number): string {
+  if (typeof value === "string") return value; // REST v2 descriptions are plain text
+  if (!value || typeof value !== "object") return "";
+  const node = value as AdfNode;
+  const children = () => (node.content ?? []).map((child) => renderAdf(child, depth)).join("");
+  switch (node.type) {
+    case "text": {
+      const text = node.text ?? "";
+      const href = node.marks?.find((mark) => mark.type === "link")?.attrs?.href;
+      if (typeof href === "string" && href !== text) return `[${text}](${href})`;
+      return node.marks?.some((mark) => mark.type === "code") ? `\`${text}\`` : text;
+    }
+    case "hardBreak":
+      return "\n";
+    case "paragraph":
+      return `${children()}\n\n`;
+    case "heading":
+      return `${"#".repeat(Number(node.attrs?.level) || 1)} ${children()}\n\n`;
+    case "bulletList":
+    case "orderedList": {
+      const items = (node.content ?? []).map((item, index) => {
+        const marker = node.type === "orderedList" ? `${index + 1}.` : "-";
+        // A list item's paragraphs would otherwise leave blank lines between items.
+        return `${"  ".repeat(depth)}${marker} ${renderAdf(item, depth + 1).trim().replace(/\n{2,}/g, "\n")}`;
+      });
+      return `${items.join("\n")}\n\n`;
+    }
+    case "codeBlock":
+      return `\`\`\`${typeof node.attrs?.language === "string" ? node.attrs.language : ""}\n${children()}\n\`\`\`\n\n`;
+    case "blockquote":
+      return `${children()
+        .trim()
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n")}\n\n`;
+    case "rule":
+      return "---\n\n";
+    case "tableRow":
+      return `| ${(node.content ?? []).map((cell) => renderAdf(cell, depth).trim().replace(/\s*\n+\s*/g, " ")).join(" | ")} |\n`;
+    case "table":
+      return `${children()}\n`;
+    case "mention":
+    case "emoji":
+    case "status":
+      return typeof node.attrs?.text === "string" ? node.attrs.text : "";
+    case "inlineCard":
+    case "blockCard":
+    case "embedCard":
+      return typeof node.attrs?.url === "string" ? node.attrs.url : "";
+    case "media":
+    case "mediaSingle":
+    case "mediaGroup":
+      return "";
+    default:
+      return children();
   }
 }
 
