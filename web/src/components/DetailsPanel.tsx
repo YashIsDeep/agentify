@@ -1,24 +1,29 @@
-import { LINK_TYPES, type TaskDetail, type TaskSummary } from "@wm/shared";
-import { Archive, Plus, Trash2 } from "lucide-react";
+import type { TaskDetail, TaskSummary } from "@wm/shared";
+import { Archive } from "lucide-react";
 import { type FormEvent, Fragment, useEffect, useState } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
 import { AGENTS } from "../lib/agents";
 import { parseTags } from "../lib/format";
+import { cleanLinks, type LinkDraft } from "../lib/links";
 import { latestOutputs } from "../lib/runs";
+import { useUnsavedChangesGuard } from "../lib/url-state";
 import { ArchiveDialog } from "./dialogs";
-import { ModelSelect } from "./ModelSelect";
-import { RepoFields } from "./RepoFields";
+import { LinksField } from "./LinksField";
+import { EffortSelect, keepEffort, ModelSelect, useAgentModels } from "./ModelSelect";
+import { RepoFields, WorktreeCheck } from "./RepoFields";
 
 interface FormState {
   title: string;
   description: string;
   repoPath: string;
   baseBranch: string;
+  useWorktree: boolean;
   tags: string;
-  links: { type: string; value: string }[];
+  links: LinkDraft[];
   agentOverride: string;
   modelOverride: string;
+  effortOverride: string;
 }
 
 const toForm = (task: TaskSummary): FormState => ({
@@ -26,19 +31,25 @@ const toForm = (task: TaskSummary): FormState => ({
   description: task.description,
   repoPath: task.repoPath ?? "",
   baseBranch: task.baseBranch ?? "",
+  useWorktree: task.useWorktree,
   tags: task.tags.join(", "),
   links: task.links.map((link) => ({ ...link })),
   agentOverride: task.agentOverride ?? "",
   modelOverride: task.modelOverride ?? "",
+  effortOverride: task.effortOverride ?? "",
 });
 
 export function DetailsPanel({ detail }: { detail: TaskDetail }) {
+  const api = useApi();
   const { task } = detail;
   const readOnly = task.status === "archived";
   const [form, setForm] = useState(() => toForm(task));
   const [dirty, setDirty] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const save = useTaskAction();
+  const models = useAgentModels();
+  // Closing the drawer or opening another task used to drop edits without a word.
+  useUnsavedChangesGuard(dirty ? `Discard your unsaved changes to “${task.title}”?` : null);
 
   // Follow live updates unless the user has unsaved edits.
   useEffect(() => {
@@ -49,9 +60,6 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
     setForm((current) => ({ ...current, ...patch }));
     setDirty(true);
   };
-  const updateLink = (index: number, patch: Partial<FormState["links"][number]>) =>
-    update({ links: form.links.map((link, i) => (i === index ? { ...link, ...patch } : link)) });
-
   const submit = (event: FormEvent) => {
     event.preventDefault();
     save.mutate(
@@ -61,10 +69,12 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
           description: form.description,
           repoPath: form.repoPath.trim() || null,
           baseBranch: form.baseBranch.trim() || null,
+          useWorktree: form.useWorktree,
           tags: parseTags(form.tags),
-          links: form.links.filter((link) => link.type.trim() && link.value.trim()),
+          links: cleanLinks(form.links),
           agentOverride: form.agentOverride || null,
           modelOverride: form.modelOverride.trim() || null,
+          effortOverride: form.effortOverride || null,
         }),
       { onSuccess: () => setDirty(false) },
     );
@@ -85,53 +95,33 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
             <textarea value={form.description} rows={5} onChange={(e) => update({ description: e.target.value })} />
           </label>
           <RepoFields repoPath={form.repoPath} baseBranch={form.baseBranch} onChange={update} />
+          {form.repoPath.trim() !== "" && (
+            <WorktreeCheck
+              checked={form.useWorktree || !!task.worktreePath}
+              disabled={!!task.worktreePath}
+              onChange={(useWorktree) => update({ useWorktree })}
+            />
+          )}
           <label className="field">
             <span>Tags</span>
             <input value={form.tags} onChange={(e) => update({ tags: e.target.value })} placeholder="comma separated" />
           </label>
 
-          <div className="field">
-            <span>Links</span>
-            {form.links.map((link, index) => (
-              <div key={index} className="link-row">
-                {/* A dropdown because `{{task.links.jira}}` matches the type exactly: a link typed
-                    "Jira" would render empty and its integration action would quietly skip. */}
-                <select
-                  className="link-type"
-                  value={link.type}
-                  onChange={(e) => updateLink(index, { type: e.target.value })}
-                >
-                  {link.type === "" && <option value="">Type…</option>}
-                  {LINK_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                  {link.type !== "" && !LINK_TYPES.includes(link.type as (typeof LINK_TYPES)[number]) && (
-                    <option value={link.type}>{link.type}</option>
-                  )}
-                </select>
-                <input value={link.value} placeholder="PROJ-123 or URL" onChange={(e) => updateLink(index, { value: e.target.value })} />
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Remove link"
-                  onClick={() => update({ links: form.links.filter((_, i) => i !== index) })}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-            <button type="button" className="link-button" onClick={() => update({ links: [...form.links, { type: "", value: "" }] })}>
-              <Plus size={13} /> Add link
-            </button>
-          </div>
+          <LinksField links={form.links} onChange={(links) => update({ links })} />
 
           <div className="field-row">
             <label className="field field-grow">
               <span>Coding agent</span>
-              <select value={form.agentOverride} onChange={(e) => update({ agentOverride: e.target.value })}>
-                <option value="">Each action's default</option>
+              <select
+                value={form.agentOverride}
+                onChange={(e) =>
+                  update({
+                    agentOverride: e.target.value,
+                    effortOverride: keepEffort(models.data, e.target.value || null, form.modelOverride, form.effortOverride),
+                  })
+                }
+              >
+                <option value="">No override</option>
                 {AGENTS.map((agent) => (
                   <option key={agent.id} value={agent.id}>
                     {agent.label}
@@ -144,12 +134,30 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
               <ModelSelect
                 value={form.modelOverride}
                 agent={form.agentOverride || null}
-                blankLabel="Action / CLI default"
-                onChange={(value) => update({ modelOverride: value })}
+                blankLabel="No override"
+                onChange={(value) =>
+                  update({
+                    modelOverride: value,
+                    effortOverride: keepEffort(models.data, form.agentOverride || null, value, form.effortOverride),
+                  })
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Effort</span>
+              <EffortSelect
+                value={form.effortOverride}
+                agent={form.agentOverride || null}
+                model={form.modelOverride}
+                blankLabel="No override"
+                onChange={(value) => update({ effortOverride: value })}
               />
             </label>
           </div>
-          <p className="hint">Overrides apply to every coding-agent action on this task; the Retry dialog can override again.</p>
+          <p className="hint">
+            Overrides apply to every coding-agent action on this task, ahead of the action's and stage's own choices; the
+            Retry dialog can override again.
+          </p>
         </fieldset>
         {!readOnly && (
           <div className="form-actions">

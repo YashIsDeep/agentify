@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
 
 const OTHER = "\u0000other";
 
@@ -19,10 +19,13 @@ export function RepoFields({
   baseBranch: string;
   onChange: (patch: { repoPath?: string; baseBranch?: string }) => void;
 }) {
+  const api = useApi();
   const repos = useQuery({ queryKey: ["repos"], queryFn: api.repos, staleTime: 30_000 });
   const known = repos.data ?? [];
   // Stay on the free-text entry while it is being typed, even before it matches a known repo.
-  const [typing, setTyping] = useState(() => repoPath !== "" && !known.some((repo) => repo.path === repoPath));
+  // Only an explicit "Another repository…" sets this: deciding it from the list before the list
+  // had loaded used to put every saved repository into the text box.
+  const [typing, setTyping] = useState(false);
 
   const branches = useQuery({
     queryKey: ["branches", repoPath],
@@ -33,7 +36,9 @@ export function RepoFields({
   });
 
   const listed = known.some((repo) => repo.path === repoPath);
-  const selectValue = typing || (repoPath !== "" && !listed) ? OTHER : repoPath;
+  // Until the list arrives, show the saved path as it is rather than guessing it's unlisted.
+  const pending = repoPath !== "" && !listed && !repos.isSuccess;
+  const selectValue = typing || (repoPath !== "" && !listed && !pending) ? OTHER : repoPath;
 
   return (
     <div className="field-row">
@@ -49,6 +54,7 @@ export function RepoFields({
           }}
         >
           <option value="">No repository</option>
+          {pending && <option value={repoPath}>{repoPath}</option>}
           {known.map((repo) => (
             <option key={repo.path} value={repo.path}>
               {repo.path}
@@ -59,7 +65,8 @@ export function RepoFields({
         </select>
         {selectValue === OTHER && (
           <input
-            autoFocus
+            // Focus only follows the user's own pick; a saved path mustn't pull the drawer's scroll down to it.
+            autoFocus={typing}
             value={repoPath}
             placeholder="C:\code\my-app"
             onChange={(event) => onChange({ repoPath: event.target.value })}
@@ -88,5 +95,30 @@ export function RepoFields({
         </select>
       </label>
     </div>
+  );
+}
+
+/** Whether the task gets its own git worktree and branch, or works in the repository's checkout. */
+export function WorktreeCheck({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="field field-check">
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+      <span>Use a worktree</span>
+      <span className="hint">
+        {disabled
+          ? "The worktree already exists; archiving the task removes it."
+          : checked
+            ? "Work happens on a new branch in a separate checkout, so tasks on the same repo don't collide."
+            : "Agents and commands work directly in the repository's checkout, on whatever branch it has."}
+      </span>
+    </label>
   );
 }
