@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { RunLogLine } from "@wm/shared";
 import { z } from "zod";
 import type { ActionRegistry } from "../actions/registry";
-import { ActionError, type ActionServices } from "../actions/types";
+import { ActionError, type ActionServices, type RunLog, UsageLimitError } from "../actions/types";
 import type { RunRow } from "../db/schema";
 import { type Paths, purgeTranscripts } from "../paths";
 import type { Engine, RunScope } from "./engine";
@@ -23,6 +23,7 @@ export class Runner {
   private readonly unsubscribe: () => void;
   private scheduled = false;
   private stopped = false;
+  private quotaTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly deps: RunnerDeps) {
     this.unsubscribe = deps.engine.on((event) => {
@@ -40,6 +41,7 @@ export class Runner {
   /** Aborts in-flight runs without recording a result; they are marked interrupted on next start. */
   async stop(): Promise<void> {
     this.stopped = true;
+    clearTimeout(this.quotaTimer);
     this.unsubscribe();
     for (const controller of this.controllers.values()) controller.abort();
     await Promise.allSettled([...this.inflight]);
@@ -66,6 +68,7 @@ export class Runner {
 
   private pump(): void {
     if (this.stopped) return;
+    this.deps.engine.requeueDueQuotaRuns();
     for (const run of this.deps.engine.claimRuns()) {
       const execution: Promise<void> = this.execute(run)
         .catch((err: unknown) => console.error(`Run ${run.id} crashed:`, err))
@@ -75,6 +78,18 @@ export class Runner {
         });
       this.inflight.add(execution);
     }
+    this.armQuotaTimer();
+  }
+
+  /** Wakes the pump when the earliest usage limit resets. */
+  private armQuotaTimer(): void {
+    clearTimeout(this.quotaTimer);
+    const next = this.deps.engine.nextQuotaResumeAt();
+    if (next === null) return;
+    // setTimeout overflows past ~24.8 days; a longer wait simply re-arms when this fires.
+    const delay = Math.min(Math.max(next - Date.now(), 0) + 50, 2_147_483_647);
+    this.quotaTimer = setTimeout(() => this.schedule(), delay);
+    this.quotaTimer.unref?.();
   }
 
   private async execute(run: RunRow): Promise<void> {
@@ -84,12 +99,15 @@ export class Runner {
     const logger = new RunLogger(paths.runLog(run.taskId, run.id), (line) =>
       engine.publish({ type: "run.log", taskId: run.taskId, runId: run.id, line }),
     );
+    // References that rendered empty, gathered across the config and anything the action renders itself.
+    const misses = new Set<string>();
 
     try {
       const definition = registry.get(run.actionType);
       if (!definition) throw new Error(`Action type "${run.actionType}" is not available`);
       const scope = engine.buildScope(run);
-      const parsed = definition.configSchema.safeParse(renderDeep({ ...run.config, ...(run.overrides ?? {}) }, scope));
+      const onMiss = (expression: string) => misses.add(expression);
+      const parsed = definition.configSchema.safeParse(renderDeep({ ...run.config, ...(run.overrides ?? {}) }, scope, onMiss));
       if (!parsed.success) throw new Error(`Invalid configuration: ${z.prettifyError(parsed.error)}`);
 
       const artifactDir = paths.artifactDir(run.taskId);
@@ -104,7 +122,7 @@ export class Runner {
         log: logger.log,
         signal: controller.signal,
         services,
-        render: (template) => renderString(template, scope),
+        render: (template) => renderString(template, scope, onMiss),
       });
       if (controller.signal.aborted) return;
       engine.finishRun(run.id, { ok: true, ...(result ?? {}) });
@@ -112,13 +130,36 @@ export class Runner {
       if (controller.signal.aborted) return;
       const message = err instanceof Error ? err.message : String(err);
       logger.log(message, "stderr");
-      engine.finishRun(run.id, { ok: false, error: message, ...(err instanceof ActionError ? err.details : {}) });
+      engine.finishRun(run.id, {
+        ok: false,
+        error: message,
+        ...(err instanceof ActionError ? err.details : {}),
+        ...(err instanceof UsageLimitError ? { resumeAt: err.resetAt } : {}),
+      });
     } finally {
       this.controllers.delete(run.id);
+      if (misses.size && !controller.signal.aborted) reportMisses(engine, run, misses);
       await logger.close();
       if (engine.findTask(run.taskId)?.status === "archived") await purgeTranscripts(paths, run.taskId);
     }
   }
+}
+
+/**
+ * One entry per run: the empty string still renders, but a prompt with a blank section shouldn't
+ * pass unnoticed.
+ */
+function reportMisses(engine: Engine, run: RunRow, misses: Set<string>): void {
+  const refs = [...misses].map((expression) => `{{${expression}}}`).join(", ");
+  const [is, part] = misses.size === 1 ? ["is", "that part"] : ["are", "those parts"];
+  engine.timeline(
+    run.taskId,
+    run.visitId,
+    run.id,
+    "template.unresolved",
+    `${run.label}: ${refs} ${is} missing; ${part} rendered empty`,
+    { refs: [...misses] },
+  );
 }
 
 function taskEnv(scope: RunScope, paths: Paths, run: RunRow): Record<string, string> {
@@ -136,7 +177,6 @@ function taskEnv(scope: RunScope, paths: Paths, run: RunRow): Record<string, str
     WM_OUTPUT_FILE: paths.runOutputFile(task.id, run.id),
     WM_RUN_ID: String(run.id),
     WM_STAGE: scope.stage.name,
-    WM_PHASE: scope.phase?.name ?? "",
     WM_ATTEMPT: String(scope.visit.attempt),
   };
 }
@@ -150,15 +190,15 @@ class RunLogger {
     private readonly onLine: (line: RunLogLine) => void,
   ) {}
 
-  readonly log = (text: string, stream: RunLogLine["stream"] = "info"): void => {
-    const line: RunLogLine = { at: Date.now(), stream, text };
+  readonly log = ((entry: string | Omit<RunLogLine, "at">, stream: RunLogLine["stream"] = "info"): void => {
+    const line: RunLogLine = { at: Date.now(), ...(typeof entry === "string" ? { stream, text: entry } : entry) };
     if (!this.stream) {
       mkdirSync(dirname(this.file), { recursive: true });
       this.stream = createWriteStream(this.file, { flags: "a" }).on("error", () => {});
     }
     this.stream.write(`${JSON.stringify(line)}\n`);
     this.onLine(line);
-  };
+  }) as RunLog;
 
   close(): Promise<void> {
     return new Promise((resolve) => (this.stream ? this.stream.end(() => resolve()) : resolve()));

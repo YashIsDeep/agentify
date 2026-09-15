@@ -25,4 +25,22 @@ describe("template", () => {
     const config = { prompt: "Do {{x}}", nested: [{ v: "{{x}}!" }], enabled: true, count: 2 };
     expect(renderDeep(config, { x: "it" })).toEqual({ prompt: "Do it", nested: [{ v: "it!" }], enabled: true, count: 2 });
   });
+
+  it("reports the references that rendered empty, deep ones included", () => {
+    const misses = new Set<string>();
+    const collect = (expression: string) => misses.add(expression);
+    const scope = { task: { title: "Login" }, outputs: { openMr: { mrUrl: null } } };
+
+    const rendered = renderDeep(
+      { prompt: '{{task.title}}: {{ artifacts["requirements.md"] }}', nested: ["{{outputs.openMr.mrUrl}}", "{{task.title}}"] },
+      scope,
+      collect,
+    );
+    expect(rendered).toEqual({ prompt: "Login: ", nested: ["", "Login"] });
+    expect([...misses]).toEqual(['artifacts["requirements.md"]', "outputs.openMr.mrUrl"]);
+  });
+
+  it("renders the same without a collector", () => {
+    expect(renderString("[{{missing}}]", {})).toBe("[]");
+  });
 });

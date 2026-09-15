@@ -5,30 +5,32 @@ import {
   ACTIVE_RUN_STATUSES,
   AGENT_IDS,
   type AgentId,
-  CHAIN_TRIGGERS,
+  APPROVAL_ACTION,
+  CODING_AGENT_ACTION,
+  type BadgeDetail,
   type CreateTaskInput,
   createTaskSchema,
-  PHASE_TRIGGERS,
-  type PhaseStatus,
+  isAgentId,
+  NO_STAGE_AGENT_DEFAULTS,
   RETRYABLE_RUN_STATUSES,
   type RunStatus,
   type ServerEvent,
+  type StageAgentDefaults,
   type TaskBadge,
   type TaskDetail,
   type TaskStatus,
   type TaskSummary,
-  type Trigger,
   type UpdateTaskInput,
   updateTaskSchema,
   type WorkflowDef,
   type WorkflowUsage,
 } from "@wm/shared";
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, lt, ne, type SQL, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, lt, lte, ne, type SQL, sql } from "drizzle-orm";
 import type { Db, Sqlite } from "../db/client";
 import * as s from "../db/schema";
-import type { BindingRow, PhaseStateRow, RunRow, TaskRow, VisitRow } from "../db/schema";
+import type { BindingRow, RunRow, TaskRow, VisitRow } from "../db/schema";
 import { type Paths, resolveInside } from "../paths";
-import type { Scope } from "./template";
+import { renderString, type Scope } from "./template";
 
 export class EngineError extends Error {
   override name = "EngineError";
@@ -49,6 +51,8 @@ export interface EngineOptions {
   paths: Paths;
   isLongRunning: (actionType: string) => boolean;
   maxConcurrentLongRuns: number;
+  /** Other workspace runtimes on this server share the same process limit. */
+  externalLongRuns?: () => number;
 }
 
 export type RunResult =
@@ -65,12 +69,13 @@ export type RunResult =
       outputs?: Record<string, unknown>;
       sessionId?: string | null;
       usage?: Record<string, unknown> | null;
+      /** A usage limit, not a failure: the run waits and is queued again at this time. */
+      resumeAt?: number;
     };
 
 export interface RunScope extends Scope {
   task: Omit<TaskRow, "links"> & { links: Record<string, string> };
   stage: { id: string; name: string };
-  phase: { id: string | null; name: string } | null;
   visit: { id: string; attempt: number };
   run: { id: number; key: string; label: string };
   artifacts: Record<string, string | undefined>;
@@ -78,15 +83,19 @@ export interface RunScope extends Scope {
   outputs: Record<string, Record<string, unknown> | undefined>;
 }
 
-interface TriggerMatch {
-  stageId?: string;
-  phaseId?: string | null;
-  afterBindingId?: string | null;
-}
+const toStageAgentDefaults = (stage: typeof s.stages.$inferSelect): StageAgentDefaults => ({
+  agent: isAgentId(stage.defaultAgent) ? stage.defaultAgent : null,
+  model: stage.defaultModel,
+  effort: stage.defaultEffort,
+});
 
 /**
  * Owns all workflow state transitions. Every public mutation runs in a single SQLite
  * transaction; events are emitted only after commit. Action execution lives in Runner.
+ *
+ * A stage is an ordered list of actions. Entering it (or pressing Start) creates one batch holding
+ * a run per enabled action; each run becomes eligible when the one above it settles, and the visit
+ * is complete once every run has.
  */
 export class Engine {
   private readonly emitter = new EventEmitter();
@@ -149,19 +158,6 @@ export class Engine {
       .where(eq(s.stages.workflowId, id))
       .orderBy(asc(s.stages.position))
       .all();
-    const phaseRows = stageRows.length
-      ? this.db
-          .select()
-          .from(s.phases)
-          .where(
-            inArray(
-              s.phases.stageId,
-              stageRows.map((stage) => stage.id),
-            ),
-          )
-          .orderBy(asc(s.phases.position))
-          .all()
-      : [];
     const bindingRows = this.db
       .select()
       .from(s.actionBindings)
@@ -173,15 +169,14 @@ export class Engine {
       id: workflow.id,
       name: workflow.name,
       description: workflow.description,
+      icon: workflow.icon,
       updatedAt: workflow.updatedAt,
       stages: stageRows.map((stage) => ({
         id: stage.id,
         name: stage.name,
         position: stage.position,
         wipLimit: stage.wipLimit,
-        phases: phaseRows
-          .filter((phase) => phase.stageId === stage.id)
-          .map(({ id: phaseId, name, position, completion }) => ({ id: phaseId, name, position, completion })),
+        agentDefaults: toStageAgentDefaults(stage),
         bindings: bindingRows
           .filter((binding) => binding.stageId === stage.id)
           .map(({ workflowId: _workflowId, ...binding }) => binding),
@@ -189,7 +184,17 @@ export class Engine {
     };
   }
 
-  /** What still depends on a template: blocks deleting it, and deleting the stages tasks sit in. */
+  /**
+   * The coding-agent defaults of the stage a run was created in. Read when the run starts rather
+   * than snapshotted, so a workflow edit applies from the next run (retries included).
+   */
+  stageAgentDefaultsForRun(run: RunRow): StageAgentDefaults {
+    const visit = this.getVisit(run.visitId);
+    const stage = this.db.select().from(s.stages).where(eq(s.stages.id, visit.stageId)).get();
+    return stage ? toStageAgentDefaults(stage) : { ...NO_STAGE_AGENT_DEFAULTS };
+  }
+
+  /** What still depends on a workflow: blocks deleting it, and deleting the stages tasks sit in. */
   workflowUsage(workflowId: string): WorkflowUsage {
     const rows = this.db
       .select({ status: s.tasks.status, stageId: s.tasks.currentStageId, n: count() })
@@ -249,19 +254,6 @@ export class Engine {
       .where(eq(s.stageVisits.taskId, id))
       .orderBy(asc(s.stageVisits.enteredAt), sql`rowid`)
       .all();
-    const phaseStates = visits.length
-      ? this.db
-          .select()
-          .from(s.phaseStates)
-          .where(
-            inArray(
-              s.phaseStates.visitId,
-              visits.map((visit) => visit.id),
-            ),
-          )
-          .orderBy(asc(s.phaseStates.position))
-          .all()
-      : [];
     const runs = this.db.select().from(s.actionRuns).where(eq(s.actionRuns.taskId, id)).orderBy(asc(s.actionRuns.id)).all();
     const timeline = this.db
       .select()
@@ -272,11 +264,7 @@ export class Engine {
 
     return {
       task: this.summarize(task),
-      visits: visits.map((visit) => ({
-        ...visit,
-        phases: phaseStates.filter((phase) => phase.visitId === visit.id),
-        runs: runs.filter((run) => run.visitId === visit.id),
-      })),
+      visits: visits.map((visit) => ({ ...visit, runs: runs.filter((run) => run.visitId === visit.id) })),
       timeline,
     };
   }
@@ -351,7 +339,6 @@ export class Engine {
   buildScope(run: RunRow): RunScope {
     const task = this.getTask(run.taskId);
     const visit = this.getVisit(run.visitId);
-    const phase = run.phaseStateId ? this.findPhaseState(run.phaseStateId) : undefined;
     const artifactDir = this.options.paths.artifactDir(task.id);
     const links: Record<string, string> = {};
     for (const link of task.links) links[link.type] ??= link.value;
@@ -359,7 +346,6 @@ export class Engine {
     return {
       task: { ...task, links },
       stage: { id: visit.stageId, name: visit.stageName },
-      phase: phase ? { id: phase.phaseId, name: phase.name } : null,
       visit: { id: visit.id, attempt: visit.attempt },
       run: { id: run.id, key: run.bindingKey, label: run.label },
       artifacts: lazyRecord((name) => {
@@ -391,6 +377,7 @@ export class Engine {
           description: input.description,
           repoPath: input.repoPath ?? null,
           baseBranch: input.baseBranch ?? null,
+          useWorktree: input.useWorktree,
           links: input.links,
           tags: input.tags,
           status: "active",
@@ -408,7 +395,10 @@ export class Engine {
   updateTask(id: string, raw: UpdateTaskInput): TaskRow {
     const patch = updateTaskSchema.parse(raw);
     return this.tx(() => {
-      this.getActiveTask(id);
+      const task = this.getActiveTask(id);
+      if (patch.useWorktree === false && task.worktreePath) {
+        throw new EngineError("This task already has a worktree; archiving the task removes it");
+      }
       this.db
         .update(s.tasks)
         .set({ ...patch, updatedAt: Date.now() })
@@ -443,82 +433,25 @@ export class Engine {
       if (!stage || stage.workflowId !== task.workflowId) {
         throw new EngineError("Stage does not belong to this task's workflow");
       }
-      const runActions = options.runActions ?? true;
-      this.exitCurrentVisit(task, { runActions, exceptRunId: options.initiatedByRunId });
-      this.enterStage(task.id, stage.id, { runActions });
+      this.exitCurrentVisit(task, { exceptRunId: options.initiatedByRunId });
+      this.enterStage(task.id, stage.id, { runActions: options.runActions ?? true });
       return { stageId: stage.id, stageName: stage.name };
     });
   }
 
-  /** Manual completion ("tick" or "Mark done anyway"). Cancels anything still running in the phase. */
-  completePhase(taskId: string, phaseStateId: string): void {
-    this.tx(() => {
-      const task = this.getActiveTask(taskId);
-      const phase = this.findPhaseState(phaseStateId);
-      if (!phase || phase.visitId !== task.currentVisitId) {
-        throw new EngineError("Phase is not part of the task's current stage", 404);
-      }
-      if (phase.status !== "running" && phase.status !== "failed") {
-        throw new EngineError(`Phase is ${phase.status}, not in progress`, 409);
-      }
-      this.completePhaseInternal(phase, "manual");
-    });
-  }
-
-  /** Completes a stage whose phases are all done, or that has no phases (e.g. Backlog). */
-  completeStage(taskId: string): void {
-    this.tx(() => {
+  /** Runs the current stage's actions for a task that entered it without running them. */
+  startActions(taskId: string): RunRow[] {
+    return this.tx(() => {
       const task = this.getActiveTask(taskId);
       if (!task.currentVisitId) throw new EngineError("Task is not in a stage", 409);
       const visit = this.getVisit(task.currentVisitId);
-      if (visit.completedAt) throw new EngineError("Stage is already complete", 409);
-      if (this.phaseStatesOf(visit.id).some((phase) => phase.status !== "done")) {
-        throw new EngineError("Complete all phases first", 409);
-      }
-      this.completeStageInternal(visit);
-    });
-  }
-
-  triggerManual(taskId: string, bindingId: string, options: { feedback?: string } = {}): RunRow {
-    return this.tx(() => {
-      const task = this.getActiveTask(taskId);
-      const binding = this.db.select().from(s.actionBindings).where(eq(s.actionBindings.id, bindingId)).get();
-      if (!binding) throw new EngineError(`Action ${bindingId} not found`, 404);
-      if (binding.trigger !== "manual") throw new EngineError("Action is not manually triggered");
-      if (binding.stageId !== task.currentStageId || !task.currentVisitId) {
-        throw new EngineError("Action belongs to a different stage", 409);
-      }
-      if (!binding.enabled) throw new EngineError("Action is disabled", 409);
-
-      if (options.feedback !== undefined) {
-        this.db
-          .update(s.tasks)
-          .set({ lastFeedback: options.feedback, updatedAt: Date.now() })
-          .where(eq(s.tasks.id, task.id))
-          .run();
-        this.timeline(task.id, task.currentVisitId, null, "feedback", options.feedback);
-      }
-
-      let phaseStateId: string | null = null;
-      if (binding.phaseId) {
-        const phase = this.db
-          .select()
-          .from(s.phaseStates)
-          .where(
-            and(
-              eq(s.phaseStates.visitId, task.currentVisitId),
-              eq(s.phaseStates.phaseId, binding.phaseId),
-              inArray(s.phaseStates.status, ["running", "failed"]),
-            ),
-          )
-          .get();
-        phaseStateId = phase?.id ?? null;
-      }
-
-      const [run] = this.createBatch(task.id, task.currentVisitId, [binding], "manual", phaseStateId, null);
-      if (phaseStateId) this.evaluatePhase(phaseStateId);
+      if (this.runsOf(visit.id).length > 0) throw new EngineError(`${visit.stageName}'s actions have already started`, 409);
+      const bindings = this.enabledBindings(visit.stageId);
+      if (bindings.length === 0) throw new EngineError(`${visit.stageName} has no actions to run`, 409);
+      this.timeline(task.id, visit.id, null, "actions.started", `Started ${visit.stageName}'s actions`);
+      const runs = this.createBatch(task.id, visit.id, bindings);
       this.publish({ type: "task.changed", taskId: task.id });
-      return run!;
+      return runs;
     });
   }
 
@@ -529,15 +462,116 @@ export class Engine {
         throw new EngineError(`Cannot retry a ${run.status} run`, 409);
       }
       const task = this.getActiveTask(run.taskId);
-      if (run.visitId !== task.currentVisitId) throw new EngineError("Task has moved on since this run", 409);
-      const latest = this.latestInSlot(run.batchId, run.batchPosition);
-      if (latest && latest.id !== run.id) throw new EngineError("A newer attempt of this action exists", 409);
+      this.assertLatestInCurrentVisit(task, run);
 
       const retry = this.insertRunCopy(run, overrides ? { ...(run.overrides ?? {}), ...overrides } : run.overrides);
       this.timeline(task.id, run.visitId, retry.id, "run.retried", `Retrying ${run.label}`);
-      if (run.phaseStateId) this.evaluatePhase(run.phaseStateId);
       this.publish({ type: "task.changed", taskId: task.id });
       return retry;
+    });
+  }
+
+  /** Carries on past an action that failed or was cancelled, as if it had succeeded. */
+  skipRun(runId: number): RunRow {
+    return this.tx(() => {
+      const run = this.getRun(runId);
+      if (run.status !== "failed" && run.status !== "cancelled" && run.status !== "interrupted") {
+        throw new EngineError(`Only a failed, cancelled or interrupted action can be skipped, not a ${run.status} one`, 409);
+      }
+      const task = this.getActiveTask(run.taskId);
+      this.assertLatestInCurrentVisit(task, run);
+
+      const skipped = this.db
+        .update(s.actionRuns)
+        .set({ status: "skipped", endedAt: run.endedAt ?? Date.now() })
+        .where(eq(s.actionRuns.id, run.id))
+        .returning()
+        .get();
+      this.timeline(task.id, run.visitId, run.id, "run.skipped", `Skipped ${run.label}`);
+      this.publish({ type: "run.changed", taskId: task.id, runId: run.id });
+      this.settled(skipped);
+      this.publish({ type: "task.changed", taskId: task.id });
+      return skipped;
+    });
+  }
+
+  /** Settles an approval that is waiting for you, so the next action runs. */
+  approveRun(runId: number): RunRow {
+    return this.tx(() => {
+      const { run, task } = this.waitingApproval(runId);
+      const approved = this.db
+        .update(s.actionRuns)
+        .set({ status: "succeeded", endedAt: Date.now(), outputs: { ...(run.outputs ?? {}), decision: "approved" } })
+        .where(eq(s.actionRuns.id, run.id))
+        .returning()
+        .get();
+      this.timeline(task.id, run.visitId, run.id, "run.approved", `Approved ${run.label}`);
+      this.publish({ type: "run.changed", taskId: task.id, runId: run.id });
+      this.settled(approved);
+      this.publish({ type: "task.changed", taskId: task.id });
+      return approved;
+    });
+  }
+
+  /** An approval's Send back: saves the note as feedback and moves the task to the approval's stage. */
+  sendBack(runId: number, options: { note?: string } = {}): { stageId: string; stageName: string } {
+    return this.tx(() => {
+      const { run, task } = this.waitingApproval(runId);
+      const target = String({ ...run.config, ...(run.overrides ?? {}) }.sendBackTo ?? "");
+      if (!target) throw new EngineError(`${run.label} has no Send back`, 409);
+      const stage = this.db.select().from(s.stages).where(eq(s.stages.id, target)).get();
+      if (!stage || stage.workflowId !== task.workflowId) {
+        throw new EngineError(`The stage ${run.label} sends back to no longer exists`, 409);
+      }
+
+      if (options.note !== undefined) {
+        this.db
+          .update(s.tasks)
+          .set({ lastFeedback: options.note, updatedAt: Date.now() })
+          .where(eq(s.tasks.id, task.id))
+          .run();
+        this.timeline(task.id, run.visitId, null, "feedback", options.note);
+      }
+      // Settled without advancing: the task is leaving, so nothing after the approval should start.
+      this.db
+        .update(s.actionRuns)
+        .set({
+          status: "succeeded",
+          endedAt: Date.now(),
+          outputs: { ...(run.outputs ?? {}), decision: "sent back", stageId: stage.id, stageName: stage.name },
+        })
+        .where(eq(s.actionRuns.id, run.id))
+        .run();
+      this.timeline(task.id, run.visitId, run.id, "run.sent-back", `${run.label}: sent back to ${stage.name}`);
+      this.publish({ type: "run.changed", taskId: task.id, runId: run.id });
+      return this.moveTask(task.id, stage.id, { runActions: true });
+    });
+  }
+
+  /**
+   * "Request changes" at an agent's approval. The same run goes back in the queue carrying your
+   * note, so the agent picks its own session up and the chat reads as one conversation.
+   */
+  requestChanges(runId: number, note: string): RunRow {
+    return this.tx(() => {
+      const { run, task } = this.waitingApproval(runId);
+      if (run.actionType !== CODING_AGENT_ACTION) {
+        throw new EngineError(`${run.label} has no agent to send changes to; approve it or send it back`, 400);
+      }
+      const updated = this.db
+        .update(s.actionRuns)
+        .set({ status: "queued", followUp: note, endedAt: null, error: null })
+        .where(eq(s.actionRuns.id, run.id))
+        .returning()
+        .get();
+      // Saved like a Send back's note, so later prompts can still read {{task.lastFeedback}}.
+      this.db.update(s.tasks).set({ lastFeedback: note, updatedAt: Date.now() }).where(eq(s.tasks.id, task.id)).run();
+      this.timeline(task.id, run.visitId, run.id, "feedback", note);
+      this.timeline(task.id, run.visitId, run.id, "run.changes-requested", `Asked ${run.label} for changes`);
+      this.publish({ type: "run.changed", taskId: task.id, runId: run.id });
+      this.publish({ type: "task.changed", taskId: task.id });
+      this.publish({ type: "runs.queued" });
+      return updated;
     });
   }
 
@@ -546,8 +580,6 @@ export class Engine {
       const run = this.getRun(runId);
       if (!ACTIVE_RUN_STATUSES.includes(run.status)) throw new EngineError(`Run is already ${run.status}`, 409);
       this.cancelRunRow(run, "Cancelled by user");
-      this.skipRestOfBatch(run);
-      if (run.phaseStateId) this.evaluatePhase(run.phaseStateId);
       this.publish({ type: "task.changed", taskId: run.taskId });
     });
   }
@@ -589,6 +621,18 @@ export class Engine {
     });
   }
 
+  /** Deletes tasks and everything recorded against them, stopping anything still running. Their files are the caller's. */
+  deleteTasks(taskIds: string[]): void {
+    if (taskIds.length === 0) return;
+    this.tx(() => {
+      for (const taskId of taskIds) {
+        this.cancelActiveRunsInternal(taskId, undefined, "Task deleted");
+        this.publish({ type: "task.changed", taskId });
+      }
+      this.db.delete(s.tasks).where(inArray(s.tasks.id, taskIds)).run(); // cascades to visits, runs and timeline
+    });
+  }
+
   // ---------------------------------------------------------------- runner interface
 
   /** Moves queued runs to running, respecting the long-running concurrency cap. */
@@ -608,6 +652,7 @@ export class Engine {
         .where(eq(s.actionRuns.status, "running"))
         .all()
         .filter((run) => this.options.isLongRunning(run.actionType)).length;
+      longRunning += this.options.externalLongRuns?.() ?? 0;
 
       const claimed: RunRow[] = [];
       for (const run of queued) {
@@ -636,23 +681,57 @@ export class Engine {
       const now = Date.now();
 
       if (result.ok) {
+        // An agent set to wait for your sign-off stops here instead: the list stays put until you decide.
+        const gated = this.wantsApproval(run);
+        const outputs = result.outputs ?? {};
+        const finished = this.db
+          .update(s.actionRuns)
+          .set({
+            status: gated ? "awaiting-approval" : "succeeded",
+            endedAt: now,
+            outputs: gated ? { ...outputs, instructions: this.renderInstructions(run) } : outputs,
+            sessionId: result.sessionId ?? null,
+            usage: result.usage ?? null,
+            followUp: null,
+          })
+          .where(eq(s.actionRuns.id, run.id))
+          .returning()
+          .get();
+        const suffix = result.summary ? `: ${result.summary}` : "";
+        // A gated run hasn't succeeded as far as the stage is concerned, so the timeline says what
+        // actually happened: it is waiting on you, with what it cost to get there.
+        if (gated) {
+          const cost = result.summary ? ` · ${result.summary}` : "";
+          this.timeline(run.taskId, run.visitId, run.id, "approval.waiting", `Waiting for your approval: ${run.label}${cost}`);
+        } else {
+          this.timeline(run.taskId, run.visitId, run.id, "run.succeeded", `${run.label} succeeded${suffix}`);
+          this.settled(finished);
+        }
+      } else if (result.resumeAt !== undefined) {
+        // Nothing is wrong with the work, so the list stays put: the run just waits.
         this.db
           .update(s.actionRuns)
           .set({
-            status: "succeeded",
+            status: "quota-wait",
             endedAt: now,
-            outputs: result.outputs ?? {},
-            sessionId: result.sessionId ?? null,
-            usage: result.usage ?? null,
+            resumeAt: result.resumeAt,
+            error: result.error,
+            // A run parked before it could start keeps what its earlier attempt recorded.
+            outputs: result.outputs ?? run.outputs,
+            sessionId: result.sessionId ?? run.sessionId,
+            usage: result.usage ?? run.usage,
           })
           .where(eq(s.actionRuns.id, run.id))
           .run();
-        const suffix = result.summary ? `: ${result.summary}` : "";
-        this.timeline(run.taskId, run.visitId, run.id, "run.succeeded", `${run.label} succeeded${suffix}`);
-        this.fireChain(run, "action.succeeded");
-        this.advanceBatch(run);
+        this.timeline(
+          run.taskId,
+          run.visitId,
+          run.id,
+          "run.quota-wait",
+          `${run.label} hit a usage limit and carries on at ${new Date(result.resumeAt).toLocaleString()}`,
+        );
       } else {
-        this.db
+        const failed = this.db
           .update(s.actionRuns)
           .set({
             status: "failed",
@@ -661,24 +740,30 @@ export class Engine {
             outputs: result.outputs ?? null,
             sessionId: result.sessionId ?? null,
             usage: result.usage ?? null,
+            followUp: null,
           })
           .where(eq(s.actionRuns.id, run.id))
-          .run();
-        this.timeline(run.taskId, run.visitId, run.id, "run.failed", `${run.label} failed: ${result.error}`);
-        this.fireChain(run, "action.failed");
-        this.skipRestOfBatch(run);
+          .returning()
+          .get();
+        const carryOn = run.continueOnFailure ? " (continuing)" : "";
+        this.timeline(run.taskId, run.visitId, run.id, "run.failed", `${run.label} failed${carryOn}: ${result.error}`);
+        // Otherwise the actions below wait until it is retried or skipped.
+        if (run.continueOnFailure) this.settled(failed);
       }
 
-      if (run.phaseStateId) this.evaluatePhase(run.phaseStateId);
       this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
       this.publish({ type: "task.changed", taskId: run.taskId });
     });
   }
 
-  /** On startup: anything still "running" belonged to a previous server process. */
+  /** On startup: anything still "running" belonged to a previous server process. Runs awaiting you keep waiting. */
   markInterruptedRuns(): number {
     return this.tx(() => {
-      const running = this.db.select().from(s.actionRuns).where(eq(s.actionRuns.status, "running")).all();
+      const running = this.db
+        .select()
+        .from(s.actionRuns)
+        .where(eq(s.actionRuns.status, "running"))
+        .all();
       for (const run of running) {
         this.db
           .update(s.actionRuns)
@@ -686,8 +771,6 @@ export class Engine {
           .where(eq(s.actionRuns.id, run.id))
           .run();
         this.timeline(run.taskId, run.visitId, run.id, "run.interrupted", `${run.label} was interrupted`);
-        this.skipRestOfBatch(run);
-        if (run.phaseStateId) this.evaluatePhase(run.phaseStateId);
         this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
         this.publish({ type: "task.changed", taskId: run.taskId });
       }
@@ -696,7 +779,42 @@ export class Engine {
     });
   }
 
-  // ---------------------------------------------------------------- internals: stages & phases
+  /** Queues the runs whose usage limit has reset. */
+  requeueDueQuotaRuns(now = Date.now()): number {
+    return this.tx(() => {
+      const due = this.db
+        .select()
+        .from(s.actionRuns)
+        .where(and(eq(s.actionRuns.status, "quota-wait"), lte(s.actionRuns.resumeAt, now)))
+        .all();
+      for (const run of due) this.requeueQuotaRun(run, `${run.label}: the usage limit has reset, trying again`);
+      return due.length;
+    });
+  }
+
+  /** "Try now": the user expects the limit has lifted before the time the agent gave. */
+  resumeQuotaRun(runId: number): RunRow {
+    return this.tx(() => {
+      const run = this.getRun(runId);
+      if (run.status !== "quota-wait") throw new EngineError(`Run is ${run.status}, not waiting for a usage limit`, 409);
+      this.getActiveTask(run.taskId);
+      return this.requeueQuotaRun(run, `Trying ${run.label} again now`);
+    });
+  }
+
+  /** When the runner next has a usage-limited run to wake. */
+  nextQuotaResumeAt(): number | null {
+    const row = this.db
+      .select({ at: s.actionRuns.resumeAt })
+      .from(s.actionRuns)
+      .where(and(eq(s.actionRuns.status, "quota-wait"), isNotNull(s.actionRuns.resumeAt)))
+      .orderBy(asc(s.actionRuns.resumeAt))
+      .limit(1)
+      .get();
+    return row?.at ?? null;
+  }
+
+  // ---------------------------------------------------------------- internals: stages
 
   private enterStage(taskId: string, stageId: string, options: { runActions: boolean }): void {
     const stage = this.db.select().from(s.stages).where(eq(s.stages.id, stageId)).get();
@@ -720,28 +838,6 @@ export class Engine {
       .returning()
       .get();
 
-    const phaseDefs = this.db
-      .select()
-      .from(s.phases)
-      .where(eq(s.phases.stageId, stageId))
-      .orderBy(asc(s.phases.position))
-      .all();
-    const phaseStates = phaseDefs.map((phase) =>
-      this.db
-        .insert(s.phaseStates)
-        .values({
-          id: randomUUID(),
-          visitId: visit.id,
-          phaseId: phase.id,
-          name: phase.name,
-          position: phase.position,
-          completion: phase.completion,
-          status: "pending",
-        })
-        .returning()
-        .get(),
-    );
-
     this.db
       .update(s.tasks)
       .set({ currentStageId: stageId, currentVisitId: visit.id, updatedAt: now })
@@ -751,12 +847,10 @@ export class Engine {
     this.timeline(taskId, visit.id, null, "stage.entered", `Entered ${stage.name}${attemptSuffix}`);
     this.publish({ type: "task.changed", taskId });
 
-    if (options.runActions) this.fire(taskId, visit.id, "stage.entered", { stageId }, null, null);
-    const first = phaseStates[0];
-    if (first) this.startPhase(first, options.runActions);
+    if (options.runActions) this.createBatch(taskId, visit.id, this.enabledBindings(stageId));
   }
 
-  private exitCurrentVisit(task: TaskRow, options: { runActions: boolean; exceptRunId?: number }): void {
+  private exitCurrentVisit(task: TaskRow, options: { exceptRunId?: number }): void {
     if (!task.currentVisitId) return;
     const visit = this.getVisit(task.currentVisitId);
     const conditions = [
@@ -769,155 +863,33 @@ export class Engine {
     }
     this.db.update(s.stageVisits).set({ exitedAt: Date.now() }).where(eq(s.stageVisits.id, visit.id)).run();
     this.timeline(task.id, visit.id, null, "stage.exited", `Left ${visit.stageName}`);
-    if (options.runActions) this.fire(task.id, visit.id, "stage.exited", { stageId: visit.stageId }, null, null);
   }
 
-  private startPhase(phase: PhaseStateRow, runActions: boolean): void {
-    const visit = this.getVisit(phase.visitId);
-    this.db
-      .update(s.phaseStates)
-      .set({ status: "running", startedAt: Date.now() })
-      .where(eq(s.phaseStates.id, phase.id))
-      .run();
-    this.timeline(visit.taskId, visit.id, null, "phase.started", `Started ${phase.name}`);
-    this.publish({ type: "task.changed", taskId: visit.taskId });
-    if (runActions && phase.phaseId) {
-      this.fire(visit.taskId, visit.id, "phase.started", { stageId: visit.stageId, phaseId: phase.phaseId }, phase.id, null);
-    }
-  }
-
-  /**
-   * Recomputes a phase from the latest attempt of each run tagged to it:
-   * anything active → running; any non-success → failed; all succeeded → complete (auto mode).
-   * A phase with no runs waits for the user.
-   */
-  private evaluatePhase(phaseStateId: string): void {
-    const phase = this.findPhaseState(phaseStateId);
-    if (!phase || phase.status === "done" || phase.status === "pending") return;
-    const visit = this.getVisit(phase.visitId);
-    const task = this.getTask(visit.taskId);
-    if (task.status !== "active" || task.currentVisitId !== visit.id) return;
-
-    const latest = latestAttempts(
-      this.db.select().from(s.actionRuns).where(eq(s.actionRuns.phaseStateId, phase.id)).all(),
-    );
-    let status: PhaseStatus = "running";
-    if (latest.length > 0 && !latest.some((run) => isActive(run.status))) {
-      if (latest.some((run) => run.status !== "succeeded")) {
-        status = "failed";
-      } else if (phase.completion === "auto") {
-        this.completePhaseInternal(phase, "auto");
-        return;
-      }
-    }
-    if (status === phase.status) return;
-    this.db.update(s.phaseStates).set({ status }).where(eq(s.phaseStates.id, phase.id)).run();
-    if (status === "failed") this.timeline(task.id, visit.id, null, "phase.failed", `${phase.name} failed`);
-    this.publish({ type: "task.changed", taskId: task.id });
-  }
-
-  private completePhaseInternal(phase: PhaseStateRow, by: "auto" | "manual"): void {
-    const visit = this.getVisit(phase.visitId);
-    const active = this.db
-      .select()
-      .from(s.actionRuns)
-      .where(and(eq(s.actionRuns.phaseStateId, phase.id), inArray(s.actionRuns.status, [...ACTIVE_RUN_STATUSES])))
-      .all();
-    for (const run of active) this.cancelRunRow(run, "Phase marked done");
-
-    this.db
-      .update(s.phaseStates)
-      .set({ status: "done", completedAt: Date.now(), completedBy: by })
-      .where(eq(s.phaseStates.id, phase.id))
-      .run();
-    this.timeline(
-      visit.taskId,
-      visit.id,
-      null,
-      "phase.completed",
-      `Completed ${phase.name}${by === "manual" ? " (manually)" : ""}`,
-    );
-    this.publish({ type: "task.changed", taskId: visit.taskId });
-    if (phase.phaseId) {
-      this.fire(visit.taskId, visit.id, "phase.completed", { stageId: visit.stageId, phaseId: phase.phaseId }, null, null);
-    }
-
-    const task = this.getTask(visit.taskId);
-    if (task.status !== "active" || task.currentVisitId !== visit.id) return;
-    const next = this.db
-      .select()
-      .from(s.phaseStates)
-      .where(
-        and(
-          eq(s.phaseStates.visitId, visit.id),
-          gt(s.phaseStates.position, phase.position),
-          eq(s.phaseStates.status, "pending"),
-        ),
-      )
-      .orderBy(asc(s.phaseStates.position))
-      .limit(1)
-      .get();
-    if (next) this.startPhase(next, true);
-    else this.completeStageInternal(visit);
-  }
-
-  private completeStageInternal(visit: VisitRow): void {
-    const fresh = this.getVisit(visit.id);
-    if (fresh.completedAt) return;
+  /** Marks the visit complete once every action in its list has settled. */
+  private completeVisitIfDone(visitId: string): void {
+    const visit = this.getVisit(visitId);
+    if (visit.completedAt) return;
+    const latest = latestAttempts(this.runsOf(visit.id));
+    if (latest.length === 0 || !latest.every(isSettled)) return;
     this.db.update(s.stageVisits).set({ completedAt: Date.now() }).where(eq(s.stageVisits.id, visit.id)).run();
     this.timeline(visit.taskId, visit.id, null, "stage.completed", `Completed ${visit.stageName}`);
     this.publish({ type: "task.changed", taskId: visit.taskId });
-    this.fire(visit.taskId, visit.id, "stage.completed", { stageId: visit.stageId }, null, null);
+  }
+
+  private enabledBindings(stageId: string): BindingRow[] {
+    return this.db
+      .select()
+      .from(s.actionBindings)
+      .where(and(eq(s.actionBindings.stageId, stageId), eq(s.actionBindings.enabled, true)))
+      .orderBy(asc(s.actionBindings.position))
+      .all();
   }
 
   // ---------------------------------------------------------------- internals: runs & batches
 
-  private fire(
-    taskId: string,
-    visitId: string,
-    trigger: Trigger,
-    match: TriggerMatch,
-    phaseStateId: string | null,
-    parentRunId: number | null,
-  ): RunRow[] {
-    if (this.getTask(taskId).status !== "active") return [];
-    const conditions = [eq(s.actionBindings.trigger, trigger), eq(s.actionBindings.enabled, true)];
-    if (CHAIN_TRIGGERS.includes(trigger)) {
-      if (!match.afterBindingId) return [];
-      conditions.push(eq(s.actionBindings.afterBindingId, match.afterBindingId));
-    } else {
-      if (!match.stageId) return [];
-      conditions.push(eq(s.actionBindings.stageId, match.stageId));
-      if (PHASE_TRIGGERS.includes(trigger)) {
-        if (!match.phaseId) return [];
-        conditions.push(eq(s.actionBindings.phaseId, match.phaseId));
-      }
-    }
-    const bindings = this.db
-      .select()
-      .from(s.actionBindings)
-      .where(and(...conditions))
-      .orderBy(asc(s.actionBindings.position))
-      .all();
-    return this.createBatch(taskId, visitId, bindings, trigger, phaseStateId, parentRunId);
-  }
-
-  private fireChain(run: RunRow, trigger: "action.succeeded" | "action.failed"): void {
-    if (!run.bindingId) return;
-    // Chained runs inherit the parent's phase so they count toward its completion.
-    this.fire(run.taskId, run.visitId, trigger, { afterBindingId: run.bindingId }, run.phaseStateId, run.id);
-  }
-
-  /** Bindings fired together run one after another, in position order. */
-  private createBatch(
-    taskId: string,
-    visitId: string,
-    bindings: BindingRow[],
-    trigger: Trigger,
-    phaseStateId: string | null,
-    parentRunId: number | null,
-  ): RunRow[] {
-    if (bindings.length === 0) return [];
+  /** One run per action, in list order. Only the first is eligible; the rest wait their turn. */
+  private createBatch(taskId: string, visitId: string, bindings: BindingRow[]): RunRow[] {
+    if (bindings.length === 0 || this.getTask(taskId).status !== "active") return [];
     const batchId = randomUUID();
     const now = Date.now();
     const runs = bindings.map((binding, index) =>
@@ -926,25 +898,23 @@ export class Engine {
         .values({
           taskId,
           visitId,
-          phaseStateId,
           bindingId: binding.id,
           bindingKey: binding.key,
           label: binding.label,
           actionType: binding.actionType,
-          trigger,
           config: binding.config,
           overrides: null,
           batchId,
           batchPosition: index,
-          status: index === 0 ? "queued" : "waiting",
-          parentRunId,
+          status: "waiting",
+          continueOnFailure: binding.continueOnFailure,
           createdAt: now,
         })
         .returning()
         .get(),
     );
     for (const run of runs) this.publish({ type: "run.changed", taskId, runId: run.id });
-    this.publish({ type: "runs.queued" });
+    this.activate(runs[0]!);
     return runs;
   }
 
@@ -954,61 +924,80 @@ export class Engine {
       .values({
         taskId: run.taskId,
         visitId: run.visitId,
-        phaseStateId: run.phaseStateId,
         bindingId: run.bindingId,
         bindingKey: run.bindingKey,
         label: run.label,
         actionType: run.actionType,
-        trigger: run.trigger,
         config: run.config,
         overrides,
         batchId: run.batchId,
         batchPosition: run.batchPosition,
-        status: "queued",
+        status: "waiting",
+        continueOnFailure: run.continueOnFailure,
         retryOfRunId: run.id,
-        parentRunId: run.parentRunId,
         createdAt: Date.now(),
       })
       .returning()
       .get();
     this.publish({ type: "run.changed", taskId: run.taskId, runId: copy.id });
-    this.publish({ type: "runs.queued" });
-    return copy;
+    return this.activate(copy);
   }
 
-  private advanceBatch(run: RunRow): void {
-    const next = this.latestInSlot(run.batchId, run.batchPosition + 1);
-    if (!next) return;
-    if (next.status === "waiting") {
-      this.db.update(s.actionRuns).set({ status: "queued" }).where(eq(s.actionRuns.id, next.id)).run();
-      this.publish({ type: "run.changed", taskId: next.taskId, runId: next.id });
+  /**
+   * Makes a waiting run eligible. An action joins the runner's queue; an approval starts waiting for
+   * you straight away, with its instructions rendered now so they describe the task as it stands.
+   */
+  private activate(run: RunRow): RunRow {
+    if (run.actionType !== APPROVAL_ACTION) {
+      const queued = this.db.update(s.actionRuns).set({ status: "queued" }).where(eq(s.actionRuns.id, run.id)).returning().get();
+      this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
       this.publish({ type: "runs.queued" });
-    } else if (next.status === "skipped") {
-      // An earlier failure skipped it; the failed step has now been retried successfully.
-      this.insertRunCopy(next, next.overrides);
+      return queued;
+    }
+    const waiting = this.db
+      .update(s.actionRuns)
+      .set({ status: "awaiting-approval", startedAt: Date.now(), outputs: { instructions: this.renderInstructions(run) } })
+      .where(eq(s.actionRuns.id, run.id))
+      .returning()
+      .get();
+    this.timeline(run.taskId, run.visitId, run.id, "approval.waiting", `Waiting for your approval: ${run.label}`);
+    this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
+    this.publish({ type: "task.changed", taskId: run.taskId });
+    return waiting;
+  }
+
+  /** A coding agent's sign-off keeps its own field, so it and the agent's prompt don't collide. */
+  private renderInstructions(run: RunRow): string {
+    const config = { ...run.config, ...(run.overrides ?? {}) };
+    const instructions = run.actionType === CODING_AGENT_ACTION ? config.approvalInstructions : config.instructions;
+    if (typeof instructions !== "string" || !instructions) return "";
+    try {
+      return renderString(instructions, this.buildScope(run));
+    } catch {
+      return instructions;
     }
   }
 
-  private skipRestOfBatch(run: RunRow): void {
-    const waiting = this.db
-      .select()
-      .from(s.actionRuns)
-      .where(
-        and(
-          eq(s.actionRuns.batchId, run.batchId),
-          gt(s.actionRuns.batchPosition, run.batchPosition),
-          eq(s.actionRuns.status, "waiting"),
-        ),
-      )
-      .all();
-    for (const skipped of waiting) {
-      this.db
-        .update(s.actionRuns)
-        .set({ status: "skipped", endedAt: Date.now() })
-        .where(eq(s.actionRuns.id, skipped.id))
-        .run();
-      this.publish({ type: "run.changed", taskId: skipped.taskId, runId: skipped.id });
-    }
+  /** A run in the list is done with (succeeded, skipped, or failed but allowed to): start the next, maybe finish the visit. */
+  private settled(run: RunRow): void {
+    const next = this.latestInSlot(run.batchId, run.batchPosition + 1);
+    // Only a run still waiting: after a retry of an earlier action, the ones below may have run already.
+    if (next?.status === "waiting" && this.getTask(run.taskId).status === "active") this.activate(next);
+    this.completeVisitIfDone(run.visitId);
+  }
+
+  private assertLatestInCurrentVisit(task: TaskRow, run: RunRow): void {
+    if (run.visitId !== task.currentVisitId) throw new EngineError("Task has moved on since this run", 409);
+    const latest = this.latestInSlot(run.batchId, run.batchPosition);
+    if (latest && latest.id !== run.id) throw new EngineError("A newer attempt of this action exists", 409);
+  }
+
+  private waitingApproval(runId: number): { run: RunRow; task: TaskRow } {
+    const run = this.getRun(runId);
+    if (run.status !== "awaiting-approval") throw new EngineError(`${run.label} is not waiting for approval`, 409);
+    const task = this.getActiveTask(run.taskId);
+    if (run.visitId !== task.currentVisitId) throw new EngineError("Task has moved on since this approval", 409);
+    return { run, task };
   }
 
   private cancelRunRow(run: RunRow, reason: string): void {
@@ -1032,6 +1021,27 @@ export class Engine {
     }
   }
 
+  /** Whether this coding agent was told to stop for your sign-off rather than simply succeed. */
+  private wantsApproval(run: RunRow): boolean {
+    if (run.actionType !== CODING_AGENT_ACTION) return false;
+    return { ...run.config, ...(run.overrides ?? {}) }.requireApproval === true;
+  }
+
+  /** The same row goes back in the queue, so its transcript and session carry on where they stopped. */
+  private requeueQuotaRun(run: RunRow, message: string): RunRow {
+    const updated = this.db
+      .update(s.actionRuns)
+      .set({ status: "queued", resumeAt: null, endedAt: null, error: null })
+      .where(eq(s.actionRuns.id, run.id))
+      .returning()
+      .get();
+    this.timeline(run.taskId, run.visitId, run.id, "run.resumed", message);
+    this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
+    this.publish({ type: "task.changed", taskId: run.taskId });
+    this.publish({ type: "runs.queued" });
+    return updated;
+  }
+
   private latestInSlot(batchId: string, batchPosition: number): RunRow | undefined {
     return this.db
       .select()
@@ -1046,12 +1056,17 @@ export class Engine {
 
   private summarize(task: TaskRow): TaskSummary {
     const visit = task.currentVisitId ? this.getVisit(task.currentVisitId) : undefined;
-    const phases = visit ? this.phaseStatesOf(visit.id) : [];
-    const runs = visit ? this.db.select().from(s.actionRuns).where(eq(s.actionRuns.visitId, visit.id)).all() : [];
+    const latest = visit ? latestAttempts(this.runsOf(visit.id)) : [];
+    // Before anything has started, progress counts what Start would run.
+    const unstarted = visit && latest.length === 0 && task.status === "active" ? this.enabledBindings(visit.stageId).length : 0;
+    const { badge, detail } = computeBadge(task, latest, unstarted > 0 ? visit!.stageName : null);
     return {
       ...task,
-      badge: computeBadge(task, phases, latestAttempts(runs)),
-      phaseProgress: { done: phases.filter((phase) => phase.status === "done").length, total: phases.length },
+      badge,
+      badgeDetail: detail,
+      actionProgress: latest.length
+        ? { done: latest.filter(isSettled).length, total: latest.length }
+        : { done: 0, total: unstarted },
       enteredStageAt: visit?.enteredAt ?? null,
     };
   }
@@ -1062,20 +1077,12 @@ export class Engine {
     return visit;
   }
 
-  private findPhaseState(id: string): PhaseStateRow | undefined {
-    return this.db.select().from(s.phaseStates).where(eq(s.phaseStates.id, id)).get();
+  private runsOf(visitId: string): RunRow[] {
+    return this.db.select().from(s.actionRuns).where(eq(s.actionRuns.visitId, visitId)).orderBy(asc(s.actionRuns.id)).all();
   }
 
-  private phaseStatesOf(visitId: string): PhaseStateRow[] {
-    return this.db
-      .select()
-      .from(s.phaseStates)
-      .where(eq(s.phaseStates.visitId, visitId))
-      .orderBy(asc(s.phaseStates.position))
-      .all();
-  }
-
-  private timeline(
+  /** Appends an entry to a task's timeline. Public so services can record what they did. */
+  timeline(
     taskId: string,
     visitId: string | null,
     runId: number | null,
@@ -1094,7 +1101,17 @@ export class Engine {
 
 // ---------------------------------------------------------------- helpers
 
-const isActive = (status: RunStatus) => ACTIVE_RUN_STATUSES.includes(status);
+/** Done with, as far as the list is concerned: the next action may start. */
+function isSettled(run: RunRow): boolean {
+  return run.status === "succeeded" || run.status === "skipped" || (run.status === "failed" && run.continueOnFailure);
+}
+
+/** Holds up the list until you retry or skip it. */
+function isBlocking(run: RunRow): boolean {
+  return (
+    (run.status === "failed" && !run.continueOnFailure) || run.status === "interrupted" || run.status === "cancelled"
+  );
+}
 
 /** Retries share a batch slot; only the newest attempt in each slot counts. */
 function latestAttempts(runs: RunRow[]): RunRow[] {
@@ -1107,19 +1124,36 @@ function latestAttempts(runs: RunRow[]): RunRow[] {
   return [...bySlot.values()];
 }
 
-function computeBadge(task: TaskRow, phases: PhaseStateRow[], latest: RunRow[]): TaskBadge {
-  if (task.status === "archived") return "archived";
-  if (latest.some((run) => run.status === "running")) return "running";
-  if (latest.some((run) => run.status === "queued" || run.status === "waiting")) return "queued";
-  const donePhases = new Set(phases.filter((phase) => phase.status === "done").map((phase) => phase.id));
-  const unresolvedFailure = latest.some(
-    (run) =>
-      (run.status === "failed" || run.status === "interrupted") &&
-      !(run.phaseStateId && donePhases.has(run.phaseStateId)),
-  );
-  if (unresolvedFailure || phases.some((phase) => phase.status === "failed")) return "failed";
-  if (phases.some((phase) => phase.status === "running")) return "needs-you";
-  return "idle";
+/** One badge per task, and what it is about, so the board and the header's counts always agree. */
+function computeBadge(
+  task: TaskRow,
+  latest: RunRow[],
+  unstartedStage: string | null,
+): { badge: TaskBadge; detail: BadgeDetail | null } {
+  if (task.status === "archived") return { badge: "archived", detail: null };
+  // Before "running": a blocked agent is technically running, but it is waiting on you.
+  const asking = latest.find((run) => run.question);
+  if (asking) return { badge: "needs-you", detail: { label: asking.label, reason: "question" } };
+  const approval = latest.find((run) => run.status === "awaiting-approval");
+  if (approval) return { badge: "needs-you", detail: { label: approval.label, reason: "approval" } };
+  const running = latest.find((run) => run.status === "running");
+  if (running) return { badge: "running", detail: { label: running.label } };
+  const limited = latest
+    .filter((run) => run.status === "quota-wait")
+    .sort((a, b) => (a.resumeAt ?? Infinity) - (b.resumeAt ?? Infinity))[0];
+  if (limited) {
+    const agent = limited.outputs?.agent;
+    return {
+      badge: "quota",
+      detail: { label: limited.label, agent: isAgentId(agent) ? agent : null, resetAt: limited.resumeAt ?? undefined },
+    };
+  }
+  const blocked = latest.find(isBlocking);
+  if (blocked) return { badge: "failed", detail: { label: blocked.label } };
+  const queued = latest.find((run) => run.status === "queued") ?? latest.find((run) => run.status === "waiting");
+  if (queued) return { badge: "queued", detail: { label: queued.label } };
+  if (unstartedStage) return { badge: "needs-you", detail: { label: unstartedStage, reason: "start" } };
+  return { badge: "idle", detail: null };
 }
 
 function lazyRecord<T>(get: (key: string) => T): Record<string, T> {

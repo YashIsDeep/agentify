@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { approval } from "../src/seed/workflows";
 import { createHarness, type Harness, inspect, removeDir, waitFor } from "./helpers";
 import { releaseGate, resetTestActions } from "./test-actions";
 
@@ -28,7 +29,7 @@ const artifact = (taskId: string, name: string) => {
 const READ_A = `node -e "const fs=require('fs');fs.writeFileSync(process.env.WM_OUTPUT_FILE, JSON.stringify({seen: fs.readFileSync('a.md','utf8')}))"`;
 
 describe("engine", () => {
-  it("runs a phase's actions in order, auto-completes it, and advances on stage completion", async () => {
+  it("runs a stage's actions in order, waits at an approval, and moves on", async () => {
     const workflowId = h.addWorkflow({
       name: "Flow",
       description: "",
@@ -36,28 +37,11 @@ describe("engine", () => {
         { name: "Backlog" },
         {
           name: "Build",
-          phases: [
-            { name: "Generate", completion: "auto" },
-            { name: "Check", completion: "manual" },
-          ],
           bindings: [
-            {
-              key: "writeA",
-              label: "Write A",
-              trigger: "phase.started",
-              phase: "Generate",
-              actionType: "write-artifact",
-              config: { name: "a.md", content: "hello {{task.title}}" },
-            },
-            {
-              key: "readA",
-              label: "Read A",
-              trigger: "phase.started",
-              phase: "Generate",
-              actionType: "shell",
-              config: { command: READ_A, cwd: "artifacts" },
-            },
-            { key: "next", label: "Next", trigger: "stage.completed", actionType: "move-stage", config: { target: "next" } },
+            { key: "writeA", label: "Write A", actionType: "write-artifact", config: { name: "a.md", content: "hello {{task.title}}" } },
+            { key: "readA", label: "Read A", actionType: "shell", config: { command: READ_A, cwd: "artifacts" } },
+            approval("check", "Check", { instructions: "Check {{outputs.readA.seen}}" }),
+            { key: "next", label: "Next", actionType: "move-stage", config: { target: "next" } },
           ],
         },
         {
@@ -66,7 +50,6 @@ describe("engine", () => {
             {
               key: "summary",
               label: "Summary",
-              trigger: "stage.entered",
               actionType: "write-artifact",
               config: { name: "summary.md", content: '{{outputs.readA.seen}} | {{artifacts["a.md"]}} | {{stage.name}}' },
             },
@@ -77,21 +60,33 @@ describe("engine", () => {
 
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     expect(q.stageName(task.id)).toBe("Backlog");
-    expect(q.detail(task.id).task.badge).toBe("idle");
+    expect(q.detail(task.id).task).toMatchObject({ badge: "idle", actionProgress: { done: 0, total: 0 } });
 
     h.engine.moveTask(task.id, h.stageId(workflowId, "Build"));
-    await waitFor(() => q.phase(task.id, "Check").status === "running");
-    expect(q.phase(task.id, "Generate")).toMatchObject({ status: "done", completedBy: "auto" });
-    expect(q.runs(task.id, "readA")[0]?.outputs).toEqual({ seen: "hello Widget" });
-    expect(q.detail(task.id).task.badge).toBe("needs-you");
+    const check = await waitFor(() =>
+      q.latest(task.id, "check")?.status === "awaiting-approval" ? q.latest(task.id, "check") : undefined,
+    );
+    expect(q.latest(task.id, "readA")?.outputs).toEqual({ seen: "hello Widget" });
+    expect(q.latest(task.id, "next")?.status).toBe("waiting");
+    // Rendered when the approval started waiting, so it describes the task as it stands.
+    expect(check.outputs).toEqual({ instructions: "Check hello Widget" });
+    expect(q.detail(task.id).task).toMatchObject({
+      badge: "needs-you",
+      badgeDetail: { label: "Check", reason: "approval" },
+      actionProgress: { done: 2, total: 4 },
+    });
 
-    h.engine.completePhase(task.id, q.phase(task.id, "Check").id);
+    const build = q.currentVisit(task.id);
+    h.engine.approveRun(check.id);
     await waitFor(() => artifact(task.id, "summary.md"));
     expect(q.stageName(task.id)).toBe("Done");
     expect(artifact(task.id, "summary.md")).toBe("hello Widget | hello Widget | Done");
+    const finished = q.detail(task.id).visits.find((visit) => visit.id === build.id)!;
+    expect(finished.completedAt).not.toBeNull();
+    expect(finished.runs.find((run) => run.bindingKey === "check")?.outputs).toMatchObject({ decision: "approved" });
   });
 
-  it("skips the rest of a batch on failure, fires action.failed, and resumes after a retry", async () => {
+  it("holds the rest of the list after a failure until the action is retried or skipped", async () => {
     const workflowId = h.addWorkflow({
       name: "Flaky",
       description: "",
@@ -99,63 +94,106 @@ describe("engine", () => {
         { name: "Backlog" },
         {
           name: "Work",
-          phases: [{ name: "Do", completion: "auto" }],
           bindings: [
-            { key: "flaky", label: "Flaky", trigger: "phase.started", phase: "Do", actionType: "test-flaky", config: { key: "k" } },
+            { key: "flaky", label: "Flaky", actionType: "test-flaky", config: { key: "{{task.title}}", failures: 1 } },
             {
               key: "after",
               label: "After",
-              trigger: "phase.started",
-              phase: "Do",
               actionType: "write-artifact",
               config: { name: "after.md", content: "attempt {{outputs.flaky.attempt}}" },
-            },
-            {
-              key: "onFail",
-              label: "On failure",
-              trigger: "action.failed",
-              after: "flaky",
-              actionType: "write-artifact",
-              config: { name: "failed.md", content: "failed" },
             },
           ],
         },
       ],
     });
+    const workId = h.stageId(workflowId, "Work");
 
-    const task = h.engine.createTask({ workflowId, title: "Flaky", stageId: h.stageId(workflowId, "Work") });
-    await waitFor(() => q.phase(task.id, "Do").status === "failed");
-    expect(artifact(task.id, "failed.md")).toBe("failed");
-    const [failed] = q.runs(task.id, "flaky");
-    expect(failed?.status).toBe("failed");
-    expect(q.runs(task.id, "after")[0]?.status).toBe("skipped");
-    expect(q.detail(task.id).task.badge).toBe("failed");
+    const retried = h.engine.createTask({ workflowId, title: "retry", stageId: workId });
+    const failed = await waitFor(() => (q.latest(retried.id, "flaky")?.status === "failed" ? q.latest(retried.id, "flaky") : undefined));
+    await h.runner.idle();
+    expect(q.latest(retried.id, "after")?.status).toBe("waiting");
+    expect(q.detail(retried.id).task).toMatchObject({ badge: "failed", badgeDetail: { label: "Flaky" } });
 
-    h.engine.retryRun(failed!.id);
-    await waitFor(() => q.phase(task.id, "Do").status === "done");
-    expect(artifact(task.id, "after.md")).toBe("attempt 2");
-    expect(q.runs(task.id, "flaky").map((run) => run.status)).toEqual(["failed", "succeeded"]);
-    expect(q.currentVisit(task.id).completedAt).not.toBeNull();
-    expect(() => h.engine.retryRun(failed!.id)).toThrow(/Cannot retry a succeeded run|newer attempt/);
+    h.engine.retryRun(failed.id);
+    await waitFor(() => q.visitDone(retried.id));
+    expect(artifact(retried.id, "after.md")).toBe("attempt 2");
+    expect(q.runs(retried.id, "flaky").map((run) => run.status)).toEqual(["failed", "succeeded"]);
+    expect(() => h.engine.retryRun(failed.id)).toThrow(/Cannot retry a succeeded run|newer attempt/);
+
+    const skipped = h.engine.createTask({ workflowId, title: "skip", stageId: workId });
+    const failure = await waitFor(() => (q.latest(skipped.id, "flaky")?.status === "failed" ? q.latest(skipped.id, "flaky") : undefined));
+    h.engine.skipRun(failure.id);
+    await waitFor(() => q.visitDone(skipped.id));
+    expect(q.latest(skipped.id, "flaky")).toMatchObject({ status: "skipped", error: "flaky failure 1" });
+    // A skipped action has no outputs to offer the ones after it.
+    expect(artifact(skipped.id, "after.md")).toBe("attempt ");
+    expect(q.detail(skipped.id).task.badge).toBe("idle");
+    expect(() => h.engine.skipRun(failure.id)).toThrow(/Only a failed, cancelled or interrupted/);
   });
 
-  it("cancels running actions when a task is moved, fires stage.exited, and can move without actions", async () => {
+  it("carries on past a failure when the action allows it", async () => {
+    const workflowId = h.addWorkflow({
+      name: "Tolerant",
+      description: "",
+      stages: [
+        {
+          name: "Work",
+          bindings: [
+            { key: "tracker", label: "Tracker", actionType: "test-flaky", config: { key: "tracker", failures: 5 }, continueOnFailure: true },
+            { key: "after", label: "After", actionType: "write-artifact", config: { name: "after.md", content: "ran" } },
+          ],
+        },
+      ],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Tolerant" });
+    await waitFor(() => q.visitDone(task.id));
+    expect(q.latest(task.id, "tracker")?.status).toBe("failed");
+    expect(artifact(task.id, "after.md")).toBe("ran");
+    expect(q.detail(task.id).task).toMatchObject({ badge: "idle", actionProgress: { done: 2, total: 2 } });
+    expect(q.detail(task.id).timeline.some((event) => event.message.startsWith("Tracker failed (continuing)"))).toBe(true);
+  });
+
+  it("warns once per run about references that rendered empty", async () => {
+    const workflowId = h.addWorkflow({
+      name: "Blanks",
+      description: "",
+      stages: [
+        {
+          name: "Work",
+          bindings: [
+            {
+              key: "write",
+              label: "Write",
+              actionType: "write-artifact",
+              config: { name: "out.md", content: '[{{artifacts["requirements.md"]}}][{{outputs.openMr.mrUrl}}][{{task.title}}]' },
+            },
+            { key: "fine", label: "Fine", actionType: "write-artifact", config: { name: "fine.md", content: "{{task.title}}" } },
+          ],
+        },
+      ],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+
+    // The empty string still renders; the warning is the only new thing.
+    expect(artifact(task.id, "out.md")).toBe("[][][Widget]");
+    const warnings = q.detail(task.id).timeline.filter((event) => event.type === "template.unresolved");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toBe(
+      'Write: {{artifacts["requirements.md"]}}, {{outputs.openMr.mrUrl}} are missing; those parts rendered empty',
+    );
+  });
+
+  it("cancels running actions when a task is moved, and can move in without running them until Start", async () => {
     const workflowId = h.addWorkflow({
       name: "Cancel",
       description: "",
       stages: [
         {
           name: "Work",
-          phases: [{ name: "Wait", completion: "auto" }],
           bindings: [
-            { key: "wait", label: "Wait", trigger: "phase.started", phase: "Wait", actionType: "test-wait", config: { gate: "never" } },
-            {
-              key: "exited",
-              label: "On exit",
-              trigger: "stage.exited",
-              actionType: "write-artifact",
-              config: { name: "exited.md", content: "left {{stage.name}}" },
-            },
+            { key: "wait", label: "Wait", actionType: "test-wait", config: { gate: "never" } },
+            { key: "off", label: "Off", actionType: "write-artifact", config: { name: "off.md", content: "" }, enabled: false },
           ],
         },
         { name: "Done" },
@@ -163,59 +201,62 @@ describe("engine", () => {
     });
     const workId = h.stageId(workflowId, "Work");
     const task = h.engine.createTask({ workflowId, title: "Cancel me" });
-    await waitFor(() => q.runs(task.id, "wait")[0]?.status === "running");
+    await waitFor(() => q.latest(task.id, "wait")?.status === "running");
+    // Disabled actions never join the list.
+    expect(q.currentVisit(task.id).runs.map((run) => run.bindingKey)).toEqual(["wait"]);
 
     h.engine.moveTask(task.id, h.stageId(workflowId, "Done"));
     expect(q.runs(task.id, "wait")[0]?.status).toBe("cancelled");
-    await waitFor(() => artifact(task.id, "exited.md"));
-    expect(artifact(task.id, "exited.md")).toBe("left Work");
     expect(q.stageName(task.id)).toBe("Done");
 
     h.engine.moveTask(task.id, workId, { runActions: false });
     const visit = q.currentVisit(task.id);
     expect(visit.attempt).toBe(2);
     expect(visit.runs).toHaveLength(0);
-    expect(visit.phases[0]?.status).toBe("running");
-    expect(q.detail(task.id).task.badge).toBe("needs-you");
+    expect(q.detail(task.id).task).toMatchObject({
+      badge: "needs-you",
+      badgeDetail: { label: "Work", reason: "start" },
+      actionProgress: { done: 0, total: 1 },
+    });
+
+    h.engine.startActions(task.id);
+    await waitFor(() => q.latest(task.id, "wait")?.status === "running");
+    expect(() => h.engine.startActions(task.id)).toThrow(/already started/);
+    h.engine.moveTask(task.id, h.stageId(workflowId, "Done"), { runActions: false });
+    expect(() => h.engine.startActions(task.id)).toThrow(/no actions to run/);
   });
 
-  it("completes phaseless stages and runs manual actions with feedback", async () => {
+  it("sends a task back from an approval with a note", async () => {
     const workflowId = h.addWorkflow({
-      name: "Manual",
+      name: "Review",
       description: "",
       stages: [
-        {
-          name: "Backlog",
-          bindings: [{ key: "toReview", label: "Next", trigger: "stage.completed", actionType: "move-stage", config: { target: "next" } }],
-        },
+        { name: "Backlog", bindings: [approval("ready", "Ready"), { key: "toReview", label: "Next", actionType: "move-stage", config: { target: "next" } }] },
         {
           name: "Review",
-          phases: [{ name: "Review", completion: "manual" }],
-          bindings: [
-            {
-              key: "sendBack",
-              label: "Send back",
-              trigger: "manual",
-              actionType: "move-stage",
-              config: { target: "@stage:Backlog" },
-              askFeedback: true,
-            },
-          ],
+          bindings: [approval("review", "Review", { sendBackTo: "Backlog" }), { key: "ship", label: "Ship", actionType: "write-artifact", config: { name: "ship.md", content: "" } }],
         },
       ],
     });
     const task = h.engine.createTask({ workflowId, title: "Manual" });
-    h.engine.completeStage(task.id);
+    const ready = q.latest(task.id, "ready")!;
+    expect(ready.status).toBe("awaiting-approval");
+    expect(() => h.engine.sendBack(ready.id)).toThrow(/has no Send back/);
+    h.engine.approveRun(ready.id);
     await waitFor(() => q.stageName(task.id) === "Review");
 
-    const sendBack = h.engine.getWorkflow(workflowId).stages[1]!.bindings[0]!;
-    expect(sendBack.askFeedback).toBe(true);
-    h.engine.triggerManual(task.id, sendBack.id, { feedback: "needs tests" });
-    await waitFor(() => q.stageName(task.id) === "Backlog");
+    const review = q.latest(task.id, "review")!;
+    h.engine.sendBack(review.id, { note: "needs tests" });
+    expect(q.stageName(task.id)).toBe("Backlog");
     expect(q.detail(task.id).task.lastFeedback).toBe("needs tests");
     expect(q.currentVisit(task.id).attempt).toBe(2);
-    expect(() => h.engine.triggerManual(task.id, sendBack.id)).toThrow(/different stage/);
-    expect(() => h.engine.completePhase(task.id, "nope")).toThrow(/not part of/);
+    const reviewRuns = q.runs(task.id, "review");
+    expect(reviewRuns[0]).toMatchObject({ status: "succeeded", outputs: { decision: "sent back", stageName: "Backlog" } });
+    // Nothing after the approval started, and the old approval can't be decided twice.
+    expect(q.runs(task.id, "ship")[0]?.status).toBe("cancelled");
+    expect(() => h.engine.approveRun(review.id)).toThrow(/not waiting for approval/);
+    await h.runner.idle();
+    expect(artifact(task.id, "ship.md")).toBeUndefined();
   });
 
   it("caps concurrent long-running actions and queues the rest", async () => {
@@ -229,49 +270,45 @@ describe("engine", () => {
       stages: [
         {
           name: "Agent",
-          phases: [{ name: "Run", completion: "auto" }],
-          bindings: [
-            // Gate name is templated from the task title.
-            { key: "agent", label: "Agent", trigger: "phase.started", phase: "Run", actionType: "test-long-wait", config: { gate: "{{task.title}}" } },
-          ],
+          // Gate name is templated from the task title.
+          bindings: [{ key: "agent", label: "Agent", actionType: "test-long-wait", config: { gate: "{{task.title}}" } }],
         },
       ],
     });
     const a = h.engine.createTask({ workflowId, title: "a" });
     const b = h.engine.createTask({ workflowId, title: "b" });
-    await waitFor(() => q.runs(a.id, "agent")[0]?.status === "running");
+    await waitFor(() => q.latest(a.id, "agent")?.status === "running");
     await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(q.runs(b.id, "agent")[0]?.status).toBe("queued");
+    expect(q.latest(b.id, "agent")?.status).toBe("queued");
     expect(q.detail(b.id).task.badge).toBe("queued");
 
     releaseGate("a");
-    await waitFor(() => q.runs(b.id, "agent")[0]?.status === "running");
+    await waitFor(() => q.latest(b.id, "agent")?.status === "running");
     releaseGate("b");
-    await waitFor(() => q.phase(b.id, "Run").status === "done");
+    await waitFor(() => q.visitDone(b.id));
   });
 
-  it("marks runs interrupted when the server stopped while they were running", async () => {
+  it("marks runs interrupted when the server stopped while they were running, but keeps approvals waiting", async () => {
     const workflowId = h.addWorkflow({
       name: "Restart",
       description: "",
       stages: [
-        {
-          name: "Work",
-          phases: [{ name: "Wait", completion: "auto" }],
-          bindings: [{ key: "wait", label: "Wait", trigger: "phase.started", phase: "Wait", actionType: "test-wait", config: { gate: "never" } }],
-        },
+        { name: "Work", bindings: [{ key: "wait", label: "Wait", actionType: "test-wait", config: { gate: "never" } }] },
+        { name: "Gate", bindings: [approval("gate", "Gate")] },
       ],
     });
     const task = h.engine.createTask({ workflowId, title: "Restart" });
-    await waitFor(() => q.runs(task.id, "wait")[0]?.status === "running");
+    const gated = h.engine.createTask({ workflowId, title: "Gated", stageId: h.stageId(workflowId, "Gate") });
+    await waitFor(() => q.latest(task.id, "wait")?.status === "running");
 
     const { dataDir } = h;
     await h.close();
     useHarness({ dataDir });
 
-    expect(q.runs(task.id, "wait")[0]?.status).toBe("interrupted");
-    expect(q.phase(task.id, "Wait").status).toBe("failed");
+    expect(q.latest(task.id, "wait")?.status).toBe("interrupted");
     expect(q.detail(task.id).task.badge).toBe("failed");
     expect(q.detail(task.id).timeline.some((event) => event.type === "run.interrupted")).toBe(true);
+    expect(q.latest(gated.id, "gate")?.status).toBe("awaiting-approval");
+    expect(q.detail(gated.id).task.badge).toBe("needs-you");
   });
 });
