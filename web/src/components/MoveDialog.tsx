@@ -1,9 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import type { StageDef, TaskSummary } from "@wm/shared";
 import { ArrowRight, TriangleAlert } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
-import { entryActionLabels } from "../lib/runs";
+import { entryActionLabels, isActiveRun, latestAttempts } from "../lib/runs";
 import { Modal } from "./Modal";
 
 export function MoveDialog({
@@ -17,10 +18,17 @@ export function MoveDialog({
   to: StageDef;
   onClose: () => void;
 }) {
+  const api = useApi();
   const [runActions, setRunActions] = useState(true);
   const move = useTaskAction();
   const entryActions = entryActionLabels(to);
-  const hasActiveRuns = task.badge === "running" || task.badge === "queued";
+  // The badge alone misses an agent that is blocked on a question ("needs you", but still running),
+  // so look at the runs themselves once the detail is at hand.
+  const detail = useQuery({ queryKey: ["task", task.id], queryFn: () => api.task(task.id) });
+  const visit = detail.data?.visits.find((v) => v.id === detail.data.task.currentVisitId);
+  const hasActiveRuns = visit
+    ? latestAttempts(visit.runs).some(isActiveRun)
+    : task.badge === "running" || task.badge === "queued" || task.badge === "quota";
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -45,11 +53,11 @@ export function MoveDialog({
           )}
           <label className="checkbox">
             <input type="checkbox" checked={runActions} onChange={(event) => setRunActions(event.target.checked)} />
-            Run entry actions
+            Run its actions
           </label>
           <p className="hint">
-            {entryActions.length > 0 ? `Will run: ${entryActions.join(", ")}.` : `${to.name} has no entry actions.`}
-            {!runActions && entryActions.length > 0 && " You can complete its phases by hand."}
+            {entryActions.length > 0 ? `In order: ${entryActions.join(" → ")}.` : `${to.name} has no actions.`}
+            {!runActions && entryActions.length > 0 && " You can start them from the task later."}
           </p>
         </div>
         <footer className="modal-footer">

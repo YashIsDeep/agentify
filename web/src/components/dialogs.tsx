@@ -1,39 +1,33 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { BindingDef, RunView, TaskSummary } from "@wm/shared";
+import type { RunView, TaskSummary } from "@wm/shared";
 import { TriangleAlert } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
 import { AGENTS } from "../lib/agents";
 import { Modal } from "./Modal";
-import { ModelSelect } from "./ModelSelect";
+import { EffortSelect, keepEffort, ModelSelect, useAgentModels } from "./ModelSelect";
 import { useToast } from "./Toast";
 
-export function FeedbackDialog({
-  taskId,
-  binding,
-  onClose,
-}: {
-  taskId: string;
-  binding: BindingDef;
-  onClose: () => void;
-}) {
-  const [feedback, setFeedback] = useState("");
+/** An approval's Send back, with a note for the next attempt. */
+export function SendBackDialog({ run, stageName, onClose }: { run: RunView; stageName: string; onClose: () => void }) {
+  const api = useApi();
+  const [note, setNote] = useState("");
   const action = useTaskAction();
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    action.mutate(() => api.triggerAction(taskId, binding.id, feedback), { onSuccess: onClose });
+    action.mutate(() => api.sendBackRun(run.id, note), { onSuccess: onClose });
   };
 
   return (
-    <Modal title={binding.label} onClose={onClose} width={520}>
+    <Modal title={`Send back to ${stageName}`} onClose={onClose} width={520}>
       <form onSubmit={submit}>
         <div className="modal-body form-grid">
           <label className="field">
-            <span>Feedback</span>
+            <span>Note</span>
             <textarea
-              value={feedback}
-              onChange={(event) => setFeedback(event.target.value)}
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
               rows={6}
               placeholder="What should change on the next attempt?"
               autoFocus
@@ -48,7 +42,7 @@ export function FeedbackDialog({
             Cancel
           </button>
           <button type="submit" className="button primary" disabled={action.isPending}>
-            {binding.label}
+            Send back to {stageName}
           </button>
         </footer>
       </form>
@@ -57,14 +51,20 @@ export function FeedbackDialog({
 }
 
 export function RetryDialog({ run, onClose }: { run: RunView; onClose: () => void }) {
-  const current = { ...run.config, ...(run.overrides ?? {}) } as { agent?: string; model?: string };
-  const [agent, setAgent] = useState(current.agent ?? "claude");
+  const api = useApi();
+  const current = { ...run.config, ...(run.overrides ?? {}) } as { agent?: string; model?: string; effort?: string };
+  // The action may leave its agent to the stage; then start from the agent that actually ran.
+  const ranWith = typeof run.outputs?.agent === "string" ? run.outputs.agent : null;
+  const initialAgent = current.agent || ranWith || "claude";
+  const [agent, setAgent] = useState(initialAgent);
   const [model, setModel] = useState(current.model ?? "");
+  const [effort, setEffort] = useState(current.effort ?? "");
+  const models = useAgentModels();
   const action = useTaskAction();
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    action.mutate(() => api.retryRun(run.id, { agent, model: model.trim() }), { onSuccess: onClose });
+    action.mutate(() => api.retryRun(run.id, { agent, model: model.trim(), effort }), { onSuccess: onClose });
   };
 
   return (
@@ -80,6 +80,7 @@ export function RetryDialog({ run, onClose }: { run: RunView; onClose: () => voi
                 onChange={(event) => {
                   setAgent(event.target.value);
                   setModel("");
+                  setEffort(keepEffort(models.data, event.target.value, "", effort));
                 }}
                 autoFocus
               >
@@ -92,10 +93,22 @@ export function RetryDialog({ run, onClose }: { run: RunView; onClose: () => voi
             </label>
             <label className="field field-grow">
               <span>Model</span>
-              <ModelSelect value={model} agent={agent} onChange={setModel} />
+              <ModelSelect
+                value={model}
+                agent={agent}
+                blankLabel="Default"
+                onChange={(value) => {
+                  setModel(value);
+                  setEffort(keepEffort(models.data, agent, value, effort));
+                }}
+              />
+            </label>
+            <label className="field">
+              <span>Effort</span>
+              <EffortSelect value={effort} agent={agent} model={model} blankLabel="Default" onChange={setEffort} />
             </label>
           </div>
-          {agent !== (current.agent ?? "claude") && (
+          {agent !== initialAgent && (
             <p className="hint">Switching agents starts a fresh session with the previous result added to the prompt.</p>
           )}
         </div>
@@ -113,6 +126,7 @@ export function RetryDialog({ run, onClose }: { run: RunView; onClose: () => voi
 }
 
 export function ArchiveDialog({ task, onClose }: { task: TaskSummary; onClose: () => void }) {
+  const api = useApi();
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const toast = useToast();
