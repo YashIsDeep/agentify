@@ -1,10 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { WorkflowDef } from "@wm/shared";
-import { type FormEvent, useState } from "react";
-import { api } from "../api";
-import { parseTags } from "../lib/format";
+import { isTicketLinkType, type TicketDraft, type WorkflowDef } from "@wm/shared";
+import { Sparkles, Ticket } from "lucide-react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useApi } from "../api-context";
+import { cleanLinks, hasIssueKey, type LinkDraft } from "../lib/links";
+import { LinksField } from "./LinksField";
 import { Modal } from "./Modal";
-import { RepoFields } from "./RepoFields";
+import { RepoFields, WorktreeCheck } from "./RepoFields";
 import { useToast } from "./Toast";
 
 export function NewTaskDialog({
@@ -16,8 +18,9 @@ export function NewTaskDialog({
   workflows: WorkflowDef[];
   defaultWorkflowId: string;
   onClose: () => void;
-  onCreated: (taskId: string) => void;
+  onCreated: (task: { id: string; workflowId: string }) => void;
 }) {
+  const api = useApi();
   const [form, setForm] = useState({
     workflowId: defaultWorkflowId,
     stageId: "",
@@ -25,9 +28,56 @@ export function NewTaskDialog({
     description: "",
     repoPath: "",
     baseBranch: "",
-    tags: "",
+    useWorktree: true,
   });
-  const set = (key: keyof typeof form) => (event: { target: { value: string } }) =>
+  // One empty row up front, so there's somewhere to paste the ticket straight away.
+  const [links, setLinks] = useState<LinkDraft[]>([{ type: "", value: "" }]);
+
+  // The first Jira or Linear link is the ticket the title and description can be drafted from.
+  const ticket = links.find((link) => isTicketLinkType(link.type) && hasIssueKey(link.value));
+  const ticketKey = ticket ? `${ticket.type}:${ticket.value.trim()}` : null;
+  const [drafting, setDrafting] = useState(false);
+  const [draftNote, setDraftNote] = useState<{ tone: "success" | "warn" | "danger"; text: string } | null>(null);
+  /** The ticket last drafted from, so the same one isn't drafted again on its own. */
+  const draftedFrom = useRef<string | null>(null);
+  /** Only the newest request may fill the form. */
+  const latestDraft = useRef(0);
+
+  const fillFromTicket = (link: LinkDraft, onlyBlank: boolean) => {
+    const request = ++latestDraft.current;
+    draftedFrom.current = `${link.type}:${link.value.trim()}`;
+    setDrafting(true);
+    setDraftNote(null);
+    api
+      .draftFromTicket({ type: link.type, value: link.value.trim() })
+      .then(
+        (draft) => {
+          if (request !== latestDraft.current) return;
+          // Typing while the draft was on its way wins over the draft.
+          setForm((current) => ({
+            ...current,
+            title: onlyBlank && current.title.trim() ? current.title : draft.title,
+            description: onlyBlank && current.description.trim() ? current.description : draft.description,
+          }));
+          setDraftNote(draftNoteFor(draft));
+        },
+        (error: Error) => {
+          if (request === latestDraft.current) setDraftNote({ tone: "danger", text: error.message });
+        },
+      )
+      .finally(() => {
+        if (request === latestDraft.current) setDrafting(false);
+      });
+  };
+
+  // A ticket added to a blank form fills it in, once the link has stopped changing.
+  const blank = !form.title.trim() && !form.description.trim();
+  useEffect(() => {
+    if (!ticket || !blank || ticketKey === draftedFrom.current) return;
+    const timer = setTimeout(() => fillFromTicket(ticket, true), 700);
+    return () => clearTimeout(timer);
+  }, [ticketKey, blank]);
+  const set = (key: "workflowId" | "stageId" | "title" | "description") => (event: { target: { value: string } }) =>
     setForm((current) => ({ ...current, [key]: event.target.value, ...(key === "workflowId" ? { stageId: "" } : {}) }));
   const workflow = workflows.find((w) => w.id === form.workflowId);
 
@@ -42,13 +92,14 @@ export function NewTaskDialog({
         description: form.description,
         repoPath: form.repoPath.trim() || null,
         baseBranch: form.baseBranch.trim() || null,
-        tags: parseTags(form.tags),
+        useWorktree: form.useWorktree,
+        links: cleanLinks(links),
       }),
     onSuccess: (detail) => {
       queryClient.setQueryData(["task", detail.task.id], detail);
       void queryClient.invalidateQueries({ queryKey: ["tasks"] });
       toast(`Created “${detail.task.title}”`);
-      onCreated(detail.task.id);
+      onCreated(detail.task);
     },
     onError: (error) => toast(error.message, "error"),
   });
@@ -58,18 +109,75 @@ export function NewTaskDialog({
     if (form.title.trim()) create.mutate();
   };
 
+  // A link row needs a value to become a link, and useWorktree only matters with a repo path.
+  const dirty =
+    form.title.trim() !== "" ||
+    form.description.trim() !== "" ||
+    form.repoPath.trim() !== "" ||
+    form.baseBranch.trim() !== "" ||
+    form.stageId !== "" ||
+    form.workflowId !== defaultWorkflowId ||
+    links.some((link) => link.value.trim() !== "");
+
+  // Escape, the backdrop, the X and Cancel all close through here, so a form with something in it
+  // is never thrown away by a stray keypress or a misplaced click.
+  const requestClose = () => {
+    if (!dirty || window.confirm("Discard this task? What you've entered will be lost.")) onClose();
+  };
+
   return (
-    <Modal title="New task" onClose={onClose} width={540}>
+    <Modal title="New task" onClose={requestClose} width={540}>
       <form onSubmit={submit}>
         <div className="modal-body form-grid">
+          {/* The only required field, and the one the manual path starts at, so it takes focus. */}
           <label className="field">
             <span>Title</span>
-            <input value={form.title} onChange={set("title")} placeholder="Add login page" autoFocus required />
+            <input
+              value={form.title}
+              onChange={set("title")}
+              placeholder={drafting ? "Drafting from the ticket…" : "Add login page"}
+              autoFocus
+              required
+            />
           </label>
-          <label className="field">
+          <label className="field field-optional">
             <span>Description</span>
-            <textarea value={form.description} onChange={set("description")} rows={4} placeholder="Markdown supported" />
+            <textarea
+              value={form.description}
+              onChange={set("description")}
+              rows={4}
+              placeholder={drafting ? "Drafting from the ticket…" : "Markdown supported"}
+            />
           </label>
+          {/* The other way in: right below the fields it fills, so it needs no extra click. */}
+          <section className="ticket-import fields-optional">
+            <p className="ticket-import-note">
+              <Ticket size={14} />
+              <span>
+                <strong>Import from ticket</strong> — paste a Jira or Linear link and it fills in the title and
+                description above.
+              </span>
+            </p>
+            <LinksField links={links} onChange={setLinks} />
+            {ticket && (
+              <div className="ticket-fill">
+                <button
+                  type="button"
+                  className="button small"
+                  disabled={drafting}
+                  onClick={() => {
+                    if (blank || window.confirm("Replace the title and description with a draft from the ticket?")) {
+                      fillFromTicket(ticket, false);
+                    }
+                  }}
+                >
+                  <Sparkles size={13} className={drafting ? "spin" : undefined} />
+                  {drafting ? "Reading the ticket…" : "Fill in from ticket"}
+                </button>
+              </div>
+            )}
+            {ticket && draftNote && <div className={`callout callout-${draftNote.tone}`}>{draftNote.text}</div>}
+          </section>
           <div className="field-row">
             <label className="field">
               <span>Workflow</span>
@@ -81,7 +189,7 @@ export function NewTaskDialog({
                 ))}
               </select>
             </label>
-            <label className="field">
+            <label className="field field-optional">
               <span>Start in</span>
               <select value={form.stageId} onChange={set("stageId")}>
                 {workflow?.stages.map((stage, index) => (
@@ -92,18 +200,23 @@ export function NewTaskDialog({
               </select>
             </label>
           </div>
-          <RepoFields
-            repoPath={form.repoPath}
-            baseBranch={form.baseBranch}
-            onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
-          />
-          <label className="field">
-            <span>Tags</span>
-            <input value={form.tags} onChange={set("tags")} placeholder="frontend, auth" />
-          </label>
+          {/* Marked through the wrapper: the repository fields belong to a component shared with the drawer. */}
+          <div className="fields-optional">
+            <RepoFields
+              repoPath={form.repoPath}
+              baseBranch={form.baseBranch}
+              onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
+            />
+          </div>
+          {form.repoPath.trim() !== "" && (
+            <WorktreeCheck
+              checked={form.useWorktree}
+              onChange={(useWorktree) => setForm((current) => ({ ...current, useWorktree }))}
+            />
+          )}
         </div>
         <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose}>
+          <button type="button" className="button ghost" onClick={requestClose}>
             Cancel
           </button>
           <button type="submit" className="button primary" disabled={create.isPending || !form.title.trim()}>
@@ -113,4 +226,10 @@ export function NewTaskDialog({
       </form>
     </Modal>
   );
+}
+
+function draftNoteFor(draft: TicketDraft): { tone: "success" | "warn"; text: string } {
+  if (draft.warning) return { tone: "warn", text: draft.warning };
+  if (!draft.drafter) return { tone: "success", text: `Copied from ${draft.issueKey}.` };
+  return { tone: "success", text: `Drafted from ${draft.issueKey} by ${draft.drafter.model ?? draft.drafter.agent}.` };
 }
