@@ -14,6 +14,11 @@ export interface RunProcessOptions {
   timeoutMs?: number;
   /** Kill the process if it produces no output for this long. */
   inactivityTimeoutMs?: number;
+  /**
+   * Suspends the inactivity timeout while true. An agent blocked on a question the user hasn't
+   * answered yet is silent on purpose, and must not be mistaken for a hung process.
+   */
+  isIdleExpected?: () => boolean;
   onLine?: (text: string, stream: "stdout" | "stderr") => void;
 }
 
@@ -56,6 +61,8 @@ export function runProcess(options: RunProcessOptions): Promise<ProcessResult> {
       if (!options.inactivityTimeoutMs) return;
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
+        // Silence is expected while the agent waits on a person; check again later instead.
+        if (options.isIdleExpected?.()) return touch();
         inactive = true;
         killTree(child.pid);
       }, options.inactivityTimeoutMs);
@@ -140,3 +147,6 @@ export function killTree(pid: number | undefined): void {
 export function tail(text: string, lines = 20): string {
   return text.trimEnd().split(/\r?\n/).slice(-lines).join("\n");
 }
+
+/** CLIs colour their output whenever they feel like it; the run log and output regexes want plain text. */
+export const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");

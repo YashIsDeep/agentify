@@ -1,9 +1,13 @@
 /**
  * Mustache-style interpolation without logic: `{{task.title}}`, `{{artifacts["requirements.md"]}}`,
- * `{{outputs.openMr.mrUrl}}`. Missing values render as an empty string.
+ * `{{outputs.openMr.mrUrl}}`. Missing values render as an empty string; pass an `onMiss` collector
+ * to learn which references those were.
  */
 
 export type Scope = Record<string, unknown>;
+
+/** Called with the expression of every reference that rendered empty, e.g. `artifacts["requirements.md"]`. */
+export type MissCollector = (expression: string) => void;
 
 export class TemplateError extends Error {
   override name = "TemplateError";
@@ -47,17 +51,21 @@ function stringify(value: unknown): string {
   return String(value);
 }
 
-export function renderString(template: string, scope: Scope): string {
-  return template.replace(TAG, (_match, expression: string) => stringify(lookup(scope, parsePath(expression))));
+export function renderString(template: string, scope: Scope, onMiss?: MissCollector): string {
+  return template.replace(TAG, (_match, expression: string) => {
+    const value = lookup(scope, parsePath(expression));
+    if (value === null || value === undefined) onMiss?.(expression);
+    return stringify(value);
+  });
 }
 
 /** Renders every string inside a JSON-like value. Non-string leaves are left untouched. */
-export function renderDeep<T>(value: T, scope: Scope): T {
-  if (typeof value === "string") return renderString(value, scope) as T;
-  if (Array.isArray(value)) return value.map((item) => renderDeep(item, scope)) as T;
+export function renderDeep<T>(value: T, scope: Scope, onMiss?: MissCollector): T {
+  if (typeof value === "string") return renderString(value, scope, onMiss) as T;
+  if (Array.isArray(value)) return value.map((item) => renderDeep(item, scope, onMiss)) as T;
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, renderDeep(item, scope)]),
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, renderDeep(item, scope, onMiss)]),
     ) as T;
   }
   return value;

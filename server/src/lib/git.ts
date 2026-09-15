@@ -1,4 +1,4 @@
-import { runProcess, tail } from "./process";
+import { runProcess, stripAnsi, tail } from "./process";
 
 export class GitError extends Error {
   override name = "GitError";
@@ -20,7 +20,8 @@ export async function git(args: string[], options: GitOptions): Promise<string> 
     cwd: options.cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     signal: options.signal,
-    onLine: options.onLine,
+    // Stripped here so every git-invoking action logs plain text, whatever the repo's colour config says.
+    onLine: options.onLine && ((text, stream) => options.onLine?.(stripAnsi(text), stream)),
   });
   if (result.aborted) throw new GitError("git was cancelled");
   if (result.code !== 0) {
