@@ -3,10 +3,11 @@ import { FileText } from "lucide-react";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api } from "../api";
+import { useApi } from "../api-context";
 import { cls, fileSize, relativeTime } from "../lib/format";
 
 export function ArtifactsPanel({ taskId }: { taskId: string }) {
+  const api = useApi();
   const list = useQuery({ queryKey: ["artifacts", taskId], queryFn: () => api.artifacts(taskId) });
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const files = list.data ?? [];

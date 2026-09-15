@@ -1,14 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import type { StageDef, TaskDetail, WorkflowDef } from "@wm/shared";
+import type { RunView, StageDef, TaskDetail, WorkflowDef } from "@wm/shared";
 import { Activity, FileText, FolderGit2, GitBranch, Link2, Settings2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ApiError, api } from "../api";
-import { useNow } from "../hooks";
+import { ApiError } from "../api";
+import { useApi } from "../api-context";
+import { useNow, useTaskAction } from "../hooks";
 import { cls, relativeTime } from "../lib/format";
+import { linkTypeLabel } from "../lib/links";
 import { ArtifactsPanel } from "./ArtifactsPanel";
+import { BrandIcon, hasBrandIcon } from "./BrandIcon";
+import { ChatModal } from "./ChatModal";
 import { DetailsPanel } from "./DetailsPanel";
+import { RetryDialog } from "./dialogs";
 import { isModalOpen } from "./Modal";
 import { MoveDialog } from "./MoveDialog";
 import { StagePanel } from "./StagePanel";
@@ -32,6 +37,7 @@ export function TaskDrawer({
   workflows: WorkflowDef[];
   onClose: () => void;
 }) {
+  const api = useApi();
   const query = useQuery({ queryKey: ["task", taskId], queryFn: () => api.task(taskId) });
   const hasRunning = query.data?.visits.some((visit) => visit.runs.some((run) => run.status === "running")) ?? false;
   const now = useNow(hasRunning ? 1000 : 30_000);
@@ -83,7 +89,11 @@ function DrawerContent({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("activity");
+  // Details holds a form: keep it mounted once opened so switching tabs doesn't throw away edits.
+  const [detailsOpened, setDetailsOpened] = useState(false);
   const [moveTo, setMoveTo] = useState<StageDef | null>(null);
+  // The chat lives here, not in the stage panel, so runs from earlier stages open it too.
+  const [chatRunId, setChatRunId] = useState<number | null>(null);
   const { task } = detail;
   const visit = detail.visits.find((v) => v.id === task.currentVisitId);
   const stage = workflow?.stages.find((s) => s.id === task.currentStageId);
@@ -94,7 +104,7 @@ function DrawerContent({
     <>
       <header className="drawer-header">
         <div className="drawer-header-top">
-          <StatusBadge badge={task.badge} />
+          <StatusBadge badge={task.badge} detail={task.badgeDetail} />
           <span className="muted small">
             {workflow?.name}
             {stage && ` · ${stage.name}`}
@@ -123,13 +133,13 @@ function DrawerContent({
             {task.links.map((link) =>
               /^https?:\/\//.test(link.value) ? (
                 <a key={link.value} className="chip chip-link" href={link.value} target="_blank" rel="noreferrer">
-                  <Link2 size={11} />
-                  {link.type}
+                  {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
+                  {linkTypeLabel(link.type)}
                 </a>
               ) : (
                 <span key={link.value} className="chip" title={link.value}>
-                  <Link2 size={11} />
-                  {link.type}: {link.value}
+                  {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
+                  {linkTypeLabel(link.type)}: {link.value}
                 </span>
               ),
             )}
@@ -170,7 +180,16 @@ function DrawerContent({
             <Markdown remarkPlugins={[remarkGfm]}>{task.description}</Markdown>
           </div>
         )}
-        {!archived && stage && visit && <StagePanel detail={detail} stage={stage} visit={visit} now={now} />}
+        {!archived && stage && visit && (
+          <StagePanel
+            detail={detail}
+            stage={stage}
+            stages={workflow?.stages ?? []}
+            visit={visit}
+            now={now}
+            onOpenChat={(run) => setChatRunId(run.id)}
+          />
+        )}
 
         <div className="subtabs" role="tablist">
           {TABS.map(({ id, label, icon: Icon }) => (
@@ -180,21 +199,67 @@ function DrawerContent({
               role="tab"
               aria-selected={tab === id}
               className={cls("subtab", tab === id && "subtab-active")}
-              onClick={() => setTab(id)}
+              onClick={() => {
+                setTab(id);
+                if (id === "details") setDetailsOpened(true);
+              }}
             >
               <Icon size={14} />
               {label}
             </button>
           ))}
         </div>
-        {tab === "activity" && <Timeline detail={detail} now={now} />}
+        {tab === "activity" && <Timeline detail={detail} now={now} onOpenChat={(run) => setChatRunId(run.id)} />}
         {tab === "artifacts" && <ArtifactsPanel taskId={task.id} />}
-        {tab === "details" && <DetailsPanel detail={detail} />}
+        {detailsOpened && (
+          <div hidden={tab !== "details"}>
+            <DetailsPanel detail={detail} />
+          </div>
+        )}
       </div>
 
       {moveTo && (
         <MoveDialog task={task} from={stage} to={moveTo} onClose={() => setMoveTo(null)} />
       )}
+      {chatRunId !== null && (
+        <AgentChat detail={detail} runId={chatRunId} now={now} onSelect={setChatRunId} onClose={() => setChatRunId(null)} />
+      )}
+    </>
+  );
+}
+
+/** The chat modal plus the Retry dialog it can open. */
+function AgentChat({
+  detail,
+  runId,
+  now,
+  onSelect,
+  onClose,
+}: {
+  detail: TaskDetail;
+  runId: number;
+  now: number;
+  onSelect: (runId: number) => void;
+  onClose: () => void;
+}) {
+  const api = useApi();
+  const action = useTaskAction();
+  const [retrying, setRetrying] = useState<RunView | null>(null);
+
+  return (
+    <>
+      <ChatModal
+        detail={detail}
+        runId={runId}
+        now={now}
+        busy={action.isPending}
+        onSelect={onSelect}
+        onRetry={setRetrying}
+        onCancel={(run) => action.mutate(() => api.cancelRun(run.id))}
+        onResume={(run) => action.mutate(() => api.resumeRun(run.id))}
+        onClose={onClose}
+      />
+      {retrying && <RetryDialog run={retrying} onClose={() => setRetrying(null)} />}
     </>
   );
 }

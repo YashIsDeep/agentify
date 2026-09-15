@@ -1,4 +1,4 @@
-import type { TaskDetail, TimelineEventView, VisitView } from "@wm/shared";
+import type { RunView, TaskDetail, TimelineEventView, VisitView } from "@wm/shared";
 import {
   Archive,
   Ban,
@@ -8,6 +8,8 @@ import {
   CircleDot,
   CircleX,
   Flag,
+  Hand,
+  Hourglass,
   LogIn,
   LogOut,
   type LucideIcon,
@@ -15,31 +17,54 @@ import {
   Play,
   Plus,
   RotateCcw,
+  SkipForward,
   TriangleAlert,
+  Undo2,
 } from "lucide-react";
 import { useState } from "react";
 import { cls, relativeTime } from "../lib/format";
+import { isAgentRun, isApprovalRun } from "../lib/runs";
 import { RunLog } from "./RunLog";
+
+interface EventContext {
+  now: number;
+  archived: boolean;
+  runs: Map<number, RunView>;
+  onOpenChat: (run: RunView) => void;
+}
 
 const EVENT_STYLE: Record<string, { icon: LucideIcon; tone: string }> = {
   "task.created": { icon: Plus, tone: "muted" },
   "stage.entered": { icon: LogIn, tone: "accent" },
   "stage.exited": { icon: LogOut, tone: "muted" },
   "stage.completed": { icon: Flag, tone: "success" },
-  "phase.started": { icon: CircleDot, tone: "muted" },
-  "phase.completed": { icon: CircleCheck, tone: "success" },
-  "phase.failed": { icon: CircleX, tone: "danger" },
+  "actions.started": { icon: Play, tone: "accent" },
+  "approval.waiting": { icon: Hand, tone: "warn" },
+  "run.approved": { icon: CircleCheck, tone: "success" },
+  "run.sent-back": { icon: Undo2, tone: "warn" },
+  "run.changes-requested": { icon: MessageSquare, tone: "warn" },
+  "run.skipped": { icon: SkipForward, tone: "muted" },
   "run.started": { icon: Play, tone: "accent" },
   "run.succeeded": { icon: CircleCheck, tone: "success" },
   "run.failed": { icon: CircleX, tone: "danger" },
   "run.cancelled": { icon: Ban, tone: "muted" },
   "run.interrupted": { icon: TriangleAlert, tone: "warn" },
+  "run.quota-wait": { icon: Hourglass, tone: "info" },
+  "run.resumed": { icon: Play, tone: "accent" },
   "run.retried": { icon: RotateCcw, tone: "accent" },
   feedback: { icon: MessageSquare, tone: "warn" },
   "task.archived": { icon: Archive, tone: "muted" },
 };
 
-export function Timeline({ detail, now }: { detail: TaskDetail; now: number }) {
+export function Timeline({
+  detail,
+  now,
+  onOpenChat,
+}: {
+  detail: TaskDetail;
+  now: number;
+  onOpenChat: (run: RunView) => void;
+}) {
   // "Started" is noise once the same run has a later event.
   const finishedRuns = new Set(
     detail.timeline.filter((event) => event.runId !== null && event.type !== "run.started").map((event) => event.runId),
@@ -47,6 +72,12 @@ export function Timeline({ detail, now }: { detail: TaskDetail; now: number }) {
   const events = detail.timeline.filter((event) => !(event.type === "run.started" && finishedRuns.has(event.runId)));
   const archived = detail.task.status === "archived";
   const visits = [...detail.visits].reverse();
+  const context: EventContext = {
+    now,
+    archived,
+    runs: new Map(detail.visits.flatMap((visit) => visit.runs).map((run) => [run.id, run])),
+    onOpenChat,
+  };
 
   return (
     <div className="timeline">
@@ -57,15 +88,14 @@ export function Timeline({ detail, now }: { detail: TaskDetail; now: number }) {
           events={events.filter((event) => event.visitId === visit.id)}
           current={visit.id === detail.task.currentVisitId && !archived}
           defaultOpen={index === 0}
-          archived={archived}
-          now={now}
+          context={context}
         />
       ))}
       <ol className="events events-general">
         {events
           .filter((event) => event.visitId === null)
           .map((event) => (
-            <EventItem key={event.id} event={event} now={now} archived={archived} />
+            <EventItem key={event.id} event={event} context={context} />
           ))}
       </ol>
     </div>
@@ -77,16 +107,15 @@ function VisitGroup({
   events,
   current,
   defaultOpen,
-  archived,
-  now,
+  context,
 }: {
   visit: VisitView;
   events: TimelineEventView[];
   current: boolean;
   defaultOpen: boolean;
-  archived: boolean;
-  now: number;
+  context: EventContext;
 }) {
+  const { now } = context;
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className={cls("visit", current && "visit-current")}>
@@ -103,7 +132,7 @@ function VisitGroup({
       {open && (
         <ol className="events">
           {events.map((event) => (
-            <EventItem key={event.id} event={event} now={now} archived={archived} />
+            <EventItem key={event.id} event={event} context={context} />
           ))}
         </ol>
       )}
@@ -111,11 +140,16 @@ function VisitGroup({
   );
 }
 
-function EventItem({ event, now, archived }: { event: TimelineEventView; now: number; archived: boolean }) {
+function EventItem({ event, context }: { event: TimelineEventView; context: EventContext }) {
+  const { now, archived } = context;
   const [showLog, setShowLog] = useState(false);
   const style = EVENT_STYLE[event.type] ?? { icon: CircleDot, tone: "muted" };
   const Icon = style.icon;
-  const canShowLog = event.runId !== null && event.type !== "run.retried";
+  // An agent's transcript is a conversation; flattened into a log it read as one run-on block.
+  const run = event.runId !== null ? context.runs.get(event.runId) : undefined;
+  // An approval has no output; its events already say what was decided.
+  const canShowLog = event.runId !== null && event.type !== "run.retried" && !(run && isApprovalRun(run));
+  const agentRun = run && isAgentRun(run) ? run : undefined;
 
   return (
     <li className={cls("event", `event-${style.tone}`, event.type === "feedback" && "event-feedback")}>
@@ -128,7 +162,12 @@ function EventItem({ event, now, archived }: { event: TimelineEventView; now: nu
           </span>
         </div>
         {event.type === "feedback" && <blockquote className="feedback-quote">{event.message}</blockquote>}
-        {canShowLog && (
+        {canShowLog && agentRun && (
+          <button type="button" className="link-button" onClick={() => context.onOpenChat(agentRun)}>
+            Open chat
+          </button>
+        )}
+        {canShowLog && !agentRun && (
           <button type="button" className="link-button" onClick={() => setShowLog((value) => !value)}>
             {showLog ? "Hide output" : "Show output"}
           </button>
