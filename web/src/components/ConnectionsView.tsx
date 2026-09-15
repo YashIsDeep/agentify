@@ -2,11 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConnectionInfo, ConnectionTestResult, ConnectionType, ConnectionTypeInfo } from "@wm/shared";
 import { Check, ExternalLink, KeyRound, Plug, Plus, Trash2, TriangleAlert } from "lucide-react";
 import { useState } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
+import { BrandIcon, hasBrandIcon } from "./BrandIcon";
 import { Modal } from "./Modal";
 import { useToast } from "./Toast";
 
 export function ConnectionsView() {
+  const api = useApi();
   const types = useQuery({ queryKey: ["connection-types"], queryFn: api.connectionTypes, staleTime: Infinity });
   const connections = useQuery({ queryKey: ["connections"], queryFn: api.connections });
   const [adding, setAdding] = useState<ConnectionTypeInfo | null>(null);
@@ -17,9 +19,8 @@ export function ConnectionsView() {
         <div>
           <h2>Connections</h2>
           <p className="muted">
-            Credentials for the Jira, Linear and Notion actions. They are stored in{" "}
-            <code>secrets.json</code> beside the database — never inside it, and never copied when a template is duplicated
-            or exported. Secrets are write-only: once saved, the browser only learns that they are set.
+            Connections belong to this workspace. Clone the workspace to reuse them, including saved credentials.
+            Secret values are never shown after saving.
           </p>
         </div>
       </div>
@@ -38,7 +39,7 @@ export function ConnectionsView() {
       <div className="conn-add">
         {types.data?.map((type) => (
           <button key={type.type} type="button" className="button" onClick={() => setAdding(type)}>
-            <Plus size={14} />
+            {hasBrandIcon(type.type) ? <BrandIcon brand={type.type} size={14} /> : <Plus size={14} />}
             Add {type.label}
           </button>
         ))}
@@ -62,8 +63,14 @@ function useConnectionForm(type: ConnectionTypeInfo, connection?: ConnectionInfo
 
   const changed = (field: string) => touched.has(field);
   const payload = () => Object.fromEntries([...touched].map((field) => [field, values[field] ?? ""]));
+  /** After a save, secrets go back to their "saved" placeholder and nothing counts as edited. */
+  const markSaved = () => {
+    const secret = new Set(type.fields.filter((field) => field.secret).map((field) => field.name));
+    setValues((current) => Object.fromEntries(Object.entries(current).filter(([field]) => !secret.has(field))));
+    setTouched(new Set());
+  };
 
-  return { name, setName, values, set, changed, payload, touched };
+  return { name, setName, values, set, changed, payload, touched, markSaved };
 }
 
 function ConnectionFields({
@@ -102,6 +109,7 @@ function ConnectionFields({
 }
 
 function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type: ConnectionTypeInfo }) {
+  const api = useApi();
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useConnectionForm(type, connection);
@@ -114,6 +122,7 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
     mutationFn: () => api.updateConnection(connection.id, { name: form.name, values: form.payload() }),
     onSuccess: async () => {
       await refresh();
+      form.markSaved();
       toast(`Saved “${form.name}”`);
     },
     onError: (error) => toast(error.message, "error"),
@@ -140,11 +149,12 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
   });
 
   const missing = type.fields.filter((field) => field.required && !form.values[field.name] && !connection.secretsSet.includes(field.name));
+  const unsaved = form.touched.size > 0 || form.name !== connection.name;
 
   return (
     <section className="agent-card">
       <header className="agent-card-header">
-        <Plug size={18} />
+        {hasBrandIcon(type.type) ? <BrandIcon brand={type.type} size={18} /> : <Plug size={18} />}
         <h3>{connection.name}</h3>
         <span className="pill pill-muted">{type.label}</span>
       </header>
@@ -171,7 +181,7 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
         )}
 
         <div className="agent-row">
-          <button type="submit" className="button primary" disabled={save.isPending}>
+          <button type="submit" className="button primary" disabled={save.isPending || !unsaved || !form.name.trim()}>
             Save
           </button>
           <button type="button" className="button" disabled={test.isPending} onClick={() => test.mutate()}>
@@ -184,6 +194,8 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
             Delete
           </button>
         </div>
+        {/* Test authenticates with what is stored, not with what is typed here. */}
+        {unsaved && <p className="hint">Test uses the saved credentials. Save first to test your changes.</p>}
       </form>
 
       {result &&
@@ -225,6 +237,7 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
 }
 
 function NewConnectionDialog({ type, onClose }: { type: ConnectionTypeInfo; onClose: () => void }) {
+  const api = useApi();
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useConnectionForm(type);
