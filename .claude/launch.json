@@ -4,8 +4,20 @@
     {
       "name": "workflow-manager-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 2712
+    },
+    {
+      "name": "workflow-manager-e2e",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set WM_DATA_DIR=C:/code/wm-e2e-data&& npm run dev"
+      ],
+      "port": 2712
     }
   ]
 }
