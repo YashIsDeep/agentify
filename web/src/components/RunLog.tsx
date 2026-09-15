@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { api } from "../api";
+import { useApi } from "../api-context";
 import { cls } from "../lib/format";
 
 export function RunLog({ runId, live, archived = false }: { runId: number; live: boolean; archived?: boolean }) {
+  const api = useApi();
   const log = useQuery({ queryKey: ["runLog", runId], queryFn: () => api.runLog(runId), staleTime: 0 });
   const ref = useRef<HTMLPreElement>(null);
   const followTail = useRef(true);
