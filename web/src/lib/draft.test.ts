@@ -1,21 +1,12 @@
 import type { ActionTypeInfo, WorkflowDef } from "@wm/shared";
 import { describe, expect, it } from "vitest";
-import {
-  addBinding,
-  isDirty,
-  moveItem,
-  removeBinding,
-  removePhase,
-  removeStage,
-  toDraft,
-  uniqueKey,
-  type Draft,
-} from "./draft";
+import { addBinding, isDirty, moveBinding, moveItem, removeBinding, removeStage, toDraft, uniqueKey, type Draft } from "./draft";
 
 const workflow = (): WorkflowDef => ({
   id: "w1",
   name: "Feature",
   description: "",
+  icon: "✨",
   updatedAt: 10,
   stages: [
     {
@@ -23,37 +14,28 @@ const workflow = (): WorkflowDef => ({
       name: "Build",
       position: 0,
       wipLimit: null,
-      phases: [
-        { id: "p1", name: "Write", position: 0, completion: "auto" },
-        { id: "p2", name: "Check", position: 1, completion: "manual" },
-      ],
+      agentDefaults: { agent: null, model: null, effort: null },
       bindings: [
         {
           id: "b1",
           stageId: "s1",
-          phaseId: "p1",
-          afterBindingId: null,
           key: "build",
           label: "Build",
-          trigger: "phase.started",
           actionType: "shell",
           config: { command: "make" },
           enabled: true,
-          askFeedback: false,
+          continueOnFailure: false,
           position: 0,
         },
         {
           id: "b2",
           stageId: "s1",
-          phaseId: null,
-          afterBindingId: "b1",
-          key: "notify",
-          label: "Notify",
-          trigger: "action.failed",
-          actionType: "shell",
-          config: { command: "echo failed" },
+          key: "check",
+          label: "Check",
+          actionType: "approval",
+          config: { instructions: "", sendBackTo: "s2", askForNote: true },
           enabled: true,
-          askFeedback: false,
+          continueOnFailure: false,
           position: 1,
         },
       ],
@@ -63,20 +45,17 @@ const workflow = (): WorkflowDef => ({
       name: "Ship",
       position: 1,
       wipLimit: null,
-      phases: [],
+      agentDefaults: { agent: null, model: null, effort: null },
       bindings: [
         {
           id: "b3",
           stageId: "s2",
-          phaseId: null,
-          afterBindingId: null,
-          key: "sendBack",
-          label: "Send back",
-          trigger: "manual",
+          key: "back",
+          label: "Back to build",
           actionType: "move-stage",
           config: { target: "s1" },
           enabled: true,
-          askFeedback: true,
+          continueOnFailure: false,
           position: 0,
         },
       ],
@@ -100,7 +79,7 @@ const shellAction: ActionTypeInfo = {
   ],
 };
 
-describe("template draft", () => {
+describe("workflow draft", () => {
   it("round-trips a workflow without looking dirty", () => {
     expect(isDirty(draft(), workflow())).toBe(false);
     expect(isDirty({ ...draft(), name: "Other" }, workflow())).toBe(true);
@@ -112,31 +91,26 @@ describe("template draft", () => {
     expect(moveItem(["a", "b", "c"], 2, 1)).toEqual(["a", "b", "c"]);
   });
 
-  it("re-points a move-stage action and drops chains when a stage is deleted", () => {
-    const next = removeStage(draft(), "s1");
-    expect(next.stages.map((s) => s.id)).toEqual(["s2"]);
-    // "Send back" pointed at the deleted stage; falling back to "next" keeps it valid.
-    expect(binding(next, "b3")?.config.target).toBe("next");
+  it("re-points a move and drops a Send back when their stage is deleted", () => {
+    // "Back to build" pointed at the deleted stage; falling back to "next" keeps it valid.
+    expect(binding(removeStage(draft(), "s1"), "b3")?.config.target).toBe("next");
+    expect(binding(removeStage(draft(), "s2"), "b2")?.config.sendBackTo).toBe("");
   });
 
-  it("keeps a stage's other actions when one they chained off is deleted", () => {
-    const next = removeBinding(draft(), "b1");
-    expect(stage(next, "s1")?.bindings.map((b) => b.id)).toEqual([]);
+  it("removes an action and keeps the rest of the list", () => {
+    expect(stage(removeBinding(draft(), "b1"), "s1")?.bindings.map((b) => b.id)).toEqual(["b2"]);
   });
 
-  it("moves a phase's actions up to the stage when the phase is deleted", () => {
-    const next = removePhase(draft(), "s1", "p1");
-    expect(stage(next, "s1")?.phases.map((p) => p.id)).toEqual(["p2"]);
-    expect(binding(next, "b1")).toMatchObject({ phaseId: null, trigger: "stage.entered" });
-  });
-
-  it("adds an action with the catalogue's defaults and an unused key", () => {
+  it("adds an action at the end of the list with the catalogue's defaults and an unused key", () => {
     const { draft: next, bindingId } = addBinding(draft(), "s1", shellAction);
-    const added = binding(next, bindingId)!;
-    expect(added.config).toEqual({ command: "", cwd: "worktree" });
-    expect(added.trigger).toBe("phase.started");
-    expect(added.phaseId).toBe("p1");
-    expect(added.key).toBe("shell");
+    expect(stage(next, "s1")?.bindings.at(-1)?.id).toBe(bindingId);
+    expect(binding(next, bindingId)).toMatchObject({ config: { command: "", cwd: "worktree" }, key: "shell", continueOnFailure: false });
+  });
+
+  it("reorders a stage's actions", () => {
+    const d = draft();
+    expect(stage(moveBinding(d, "s1", 1, -1), "s1")?.bindings.map((b) => b.id)).toEqual(["b2", "b1"]);
+    expect(moveBinding(d, "s1", 0, -1)).toBe(d);
   });
 
   it("derives unique identifier-safe keys", () => {

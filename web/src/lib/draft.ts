@@ -1,41 +1,34 @@
-import type { ActionTypeInfo, CompletionMode, SaveWorkflowInput, Trigger, WorkflowDef } from "@wm/shared";
-import { BINDING_KEY_PATTERN } from "@wm/shared";
+import type { ActionTypeInfo, SaveWorkflowInput, StageAgentDefaults, WorkflowDef } from "@wm/shared";
+import { APPROVAL_ACTION, BINDING_KEY_PATTERN, NO_STAGE_AGENT_DEFAULTS } from "@wm/shared";
 
 /**
- * The editor's working copy of a template. Ids are generated on the client so a brand-new
- * phase can be referenced by a brand-new binding before anything is saved; the server treats
- * ids it hasn't seen as inserts.
+ * The editor's working copy of a workflow. Ids are generated on the client so a brand-new stage can
+ * be referenced (a Send back, a move) before anything is saved; the server treats ids it hasn't
+ * seen as inserts.
  */
-export interface DraftPhase {
-  id: string;
-  name: string;
-  completion: CompletionMode;
-}
-
 export interface DraftBinding {
   id: string;
   key: string;
   label: string;
-  trigger: Trigger;
-  phaseId: string | null;
-  afterBindingId: string | null;
   actionType: string;
   config: Record<string, unknown>;
   enabled: boolean;
-  askFeedback: boolean;
+  continueOnFailure: boolean;
 }
 
 export interface DraftStage {
   id: string;
   name: string;
   wipLimit: number | null;
-  phases: DraftPhase[];
+  agentDefaults: StageAgentDefaults;
+  /** In the order they run. */
   bindings: DraftBinding[];
 }
 
 export interface Draft {
   name: string;
   description: string;
+  icon: string;
   updatedAt: number;
   stages: DraftStage[];
 }
@@ -46,23 +39,21 @@ export function toDraft(workflow: WorkflowDef): Draft {
   return {
     name: workflow.name,
     description: workflow.description,
+    icon: workflow.icon,
     updatedAt: workflow.updatedAt,
     stages: workflow.stages.map((stage) => ({
       id: stage.id,
       name: stage.name,
       wipLimit: stage.wipLimit,
-      phases: stage.phases.map(({ id, name, completion }) => ({ id, name, completion })),
+      agentDefaults: { ...stage.agentDefaults },
       bindings: stage.bindings.map((binding) => ({
         id: binding.id,
         key: binding.key,
         label: binding.label,
-        trigger: binding.trigger,
-        phaseId: binding.phaseId,
-        afterBindingId: binding.afterBindingId,
         actionType: binding.actionType,
         config: binding.config,
         enabled: binding.enabled,
-        askFeedback: binding.askFeedback,
+        continueOnFailure: binding.continueOnFailure,
       })),
     })),
   };
@@ -95,63 +86,45 @@ export const updateStage = (draft: Draft, stageId: string, patch: Partial<DraftS
 });
 
 export function addStage(draft: Draft, at = draft.stages.length): { draft: Draft; stageId: string } {
-  const stage: DraftStage = { id: newId(), name: uniqueName(draft.stages.map((s) => s.name), "New stage"), wipLimit: null, phases: [], bindings: [] };
+  const stage: DraftStage = {
+    id: newId(),
+    name: uniqueName(draft.stages.map((s) => s.name), "New stage"),
+    wipLimit: null,
+    agentDefaults: { ...NO_STAGE_AGENT_DEFAULTS },
+    bindings: [],
+  };
   const stages = [...draft.stages];
   stages.splice(at, 0, stage);
   return { draft: { ...draft, stages }, stageId: stage.id };
 }
 
 /**
- * Removes a stage plus anything that pointed at it: bindings that follow one of its actions,
- * and `move-stage` destinations. Leaving those behind would fail validation on save.
+ * Removes a stage plus anything that pointed at it: `move-stage` destinations fall back to the next
+ * stage and Send backs are dropped. Leaving them behind would fail validation on save.
  */
 export function removeStage(draft: Draft, stageId: string): Draft {
-  const stage = draft.stages.find((s) => s.id === stageId);
-  if (!stage) return draft;
-  const goneBindingIds = new Set(stage.bindings.map((binding) => binding.id));
-
+  if (!draft.stages.some((s) => s.id === stageId)) return draft;
   return {
     ...draft,
     stages: draft.stages
       .filter((s) => s.id !== stageId)
       .map((s) => ({
         ...s,
-        bindings: s.bindings
-          .filter((binding) => !(binding.afterBindingId && goneBindingIds.has(binding.afterBindingId)))
-          .map((binding) =>
-            binding.actionType === "move-stage" && binding.config.target === stageId
-              ? { ...binding, config: { ...binding.config, target: "next" } }
-              : binding,
-          ),
+        bindings: s.bindings.map((binding) => {
+          if (binding.actionType === "move-stage" && binding.config.target === stageId) {
+            return { ...binding, config: { ...binding.config, target: "next" } };
+          }
+          // Both the Approval action and a coding agent's own approval can point at a stage.
+          if (binding.config.sendBackTo === stageId) {
+            return { ...binding, config: { ...binding.config, sendBackTo: "" } };
+          }
+          return binding;
+        }),
       })),
   };
 }
 
-export function addPhase(draft: Draft, stageId: string): Draft {
-  const stage = draft.stages.find((s) => s.id === stageId);
-  if (!stage) return draft;
-  const phase: DraftPhase = { id: newId(), name: uniqueName(stage.phases.map((p) => p.name), "New phase"), completion: "manual" };
-  return updateStage(draft, stageId, { phases: [...stage.phases, phase] });
-}
-
-/** Bindings tied to the phase fall back to the stage; phase triggers become stage triggers. */
-export function removePhase(draft: Draft, stageId: string, phaseId: string): Draft {
-  const stage = draft.stages.find((s) => s.id === stageId);
-  if (!stage) return draft;
-  return updateStage(draft, stageId, {
-    phases: stage.phases.filter((phase) => phase.id !== phaseId),
-    bindings: stage.bindings.map((binding) =>
-      binding.phaseId === phaseId
-        ? {
-            ...binding,
-            phaseId: null,
-            trigger: binding.trigger === "phase.started" ? "stage.entered" : binding.trigger === "phase.completed" ? "stage.completed" : binding.trigger,
-          }
-        : binding,
-    ),
-  });
-}
-
+/** Appends to the end of the stage's list, where it runs last. */
 export function addBinding(draft: Draft, stageId: string, action: ActionTypeInfo): { draft: Draft; bindingId: string } {
   const stage = draft.stages.find((s) => s.id === stageId);
   if (!stage) return { draft, bindingId: "" };
@@ -159,15 +132,19 @@ export function addBinding(draft: Draft, stageId: string, action: ActionTypeInfo
     id: newId(),
     key: uniqueKey(draft, action.type),
     label: action.label,
-    trigger: stage.phases.length > 0 ? "phase.started" : "stage.entered",
-    phaseId: stage.phases[0]?.id ?? null,
-    afterBindingId: null,
     actionType: action.type,
     config: Object.fromEntries(action.fields.map((field) => [field.name, field.default])),
     enabled: true,
-    askFeedback: false,
+    continueOnFailure: false,
   };
   return { draft: updateStage(draft, stageId, { bindings: [...stage.bindings, binding] }), bindingId: binding.id };
+}
+
+export function moveBinding(draft: Draft, stageId: string, index: number, delta: number): Draft {
+  const stage = draft.stages.find((s) => s.id === stageId);
+  if (!stage) return draft;
+  const bindings = moveItem(stage.bindings, index, delta);
+  return bindings === stage.bindings ? draft : updateStage(draft, stageId, { bindings });
 }
 
 export function updateBinding(draft: Draft, bindingId: string, patch: Partial<DraftBinding>): Draft {
@@ -180,14 +157,10 @@ export function updateBinding(draft: Draft, bindingId: string, patch: Partial<Dr
   };
 }
 
-/** Also drops chains that followed it, which would otherwise dangle. */
 export function removeBinding(draft: Draft, bindingId: string): Draft {
   return {
     ...draft,
-    stages: draft.stages.map((stage) => ({
-      ...stage,
-      bindings: stage.bindings.filter((binding) => binding.id !== bindingId && binding.afterBindingId !== bindingId),
-    })),
+    stages: draft.stages.map((stage) => ({ ...stage, bindings: stage.bindings.filter((binding) => binding.id !== bindingId) })),
   };
 }
 

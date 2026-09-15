@@ -1,9 +1,11 @@
-import type { ActionField, ActionTypeInfo, ConnectionInfo } from "@wm/shared";
+import type { ActionField, ActionTypeInfo, AgentId, ConnectionInfo } from "@wm/shared";
 import { Plus, X } from "lucide-react";
 import { useState } from "react";
-import { AGENTS } from "../../lib/agents";
+import { AGENTS, agentLabel } from "../../lib/agents";
 import { replaceAt, type DraftStage } from "../../lib/draft";
-import { ModelSelect } from "../ModelSelect";
+import { EffortSelect, keepEffort, ModelSelect, useAgentModels } from "../ModelSelect";
+
+const stringOrNull = (value: unknown) => (typeof value === "string" ? value : null);
 
 /** Renders an action's config form from the field metadata the server publishes. */
 export function ConfigFields({
@@ -11,32 +13,51 @@ export function ConfigFields({
   config,
   stages,
   connections,
+  stageAgent,
   onChange,
 }: {
   action: ActionTypeInfo;
   config: Record<string, unknown>;
   stages: DraftStage[];
   connections: ConnectionInfo[];
+  /** The agent this action's stage supplies when its own is left blank. */
+  stageAgent: AgentId | null;
   onChange: (config: Record<string, unknown>) => void;
 }) {
-  const set = (name: string, value: unknown) => onChange({ ...config, [name]: value });
+  const models = useAgentModels();
+  // With no agent here or on the stage, it's only settled at run time, so lists cover every agent.
+  const agentOf = (values: Record<string, unknown>) => stringOrNull(values.agent) || stageAgent;
+  const set = (name: string, value: unknown) => {
+    const next = { ...config, [name]: value };
+    // An effort belongs to its model: drop it when the new agent or model doesn't offer it.
+    if ((name === "agent" || name === "model") && typeof next.effort === "string") {
+      next.effort = keepEffort(models.data, agentOf(next), stringOrNull(next.model), next.effort);
+    }
+    onChange(next);
+  };
   // Only connections this action can actually authenticate with.
   const usable = connections.filter((connection) => connection.type === action.connectionType);
 
   return (
     <>
-      {action.fields.map((field) => (
-        <Field
-          key={field.name}
-          field={field}
-          value={config[field.name]}
-          stages={stages}
-          connections={usable}
-          // The model list depends on the agent chosen in this same form.
-          agent={typeof config.agent === "string" ? config.agent : null}
-          onChange={(value) => set(field.name, value)}
-        />
-      ))}
+      {action.fields
+        // A field can hang off a switch (an approval's instructions off "Wait for my approval"):
+        // with the switch off it is noise, and its value is kept for when it goes back on.
+        .filter((field) => !field.dependsOn || config[field.dependsOn] === true)
+        .map((field) => (
+          <Field
+            key={field.name}
+            field={field}
+            value={config[field.name]}
+            stages={stages}
+            connections={usable}
+            // The model list depends on the agent chosen in this same form, the effort list on both.
+            agent={agentOf(config)}
+            stageAgent={stageAgent}
+            model={stringOrNull(config.model)}
+            onChange={(value) => set(field.name, value)}
+          />
+        ))}
     </>
   );
 }
@@ -47,6 +68,8 @@ function Field({
   stages,
   connections,
   agent,
+  stageAgent,
+  model,
   onChange,
 }: {
   field: ActionField;
@@ -54,6 +77,8 @@ function Field({
   stages: DraftStage[];
   connections: ConnectionInfo[];
   agent: string | null;
+  stageAgent: AgentId | null;
+  model: string | null;
   onChange: (value: unknown) => void;
 }) {
   const help = (
@@ -82,7 +107,17 @@ function Field({
     return (
       <label className="field">
         <span>{field.label}</span>
-        <ModelSelect value={String(value ?? "")} agent={agent} onChange={onChange} />
+        <ModelSelect value={String(value ?? "")} agent={agent} blankLabel="Default" onChange={onChange} />
+        {help}
+      </label>
+    );
+  }
+
+  if (field.kind === "effort") {
+    return (
+      <label className="field">
+        <span>{field.label}</span>
+        <EffortSelect value={String(value ?? "")} agent={agent} model={model} blankLabel="Default" onChange={onChange} />
         {help}
       </label>
     );
@@ -147,7 +182,8 @@ function Field({
           ))}
         </select>
       ) : field.kind === "agent" ? (
-        <select value={String(value ?? "claude")} onChange={(event) => onChange(event.target.value)}>
+        <select value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+          <option value="">Stage default ({agentLabel(stageAgent ?? "claude")})</option>
           {AGENTS.map((agent) => (
             <option key={agent.id} value={agent.id}>
               {agent.label}
@@ -155,8 +191,8 @@ function Field({
           ))}
         </select>
       ) : field.kind === "stage" ? (
-        <select value={String(value ?? "next")} onChange={(event) => onChange(event.target.value)}>
-          <option value="next">The next stage</option>
+        <select value={String(value ?? (field.noneLabel === undefined ? "next" : ""))} onChange={(event) => onChange(event.target.value)}>
+          {field.noneLabel === undefined ? <option value="next">The next stage</option> : <option value="">{field.noneLabel}</option>}
           {stages.map((stage) => (
             <option key={stage.id} value={stage.id}>
               {stage.name}

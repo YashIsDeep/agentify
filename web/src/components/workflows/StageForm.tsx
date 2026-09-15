@@ -1,114 +1,103 @@
-import { COMPLETION_MODES } from "@wm/shared";
-import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
-import type { CompletionMode } from "@wm/shared";
-import type { DraftPhase, DraftStage } from "../../lib/draft";
-import { moveItem } from "../../lib/draft";
+import type { AgentId, StageAgentDefaults } from "@wm/shared";
+import { AGENTS } from "../../lib/agents";
+import type { DraftStage } from "../../lib/draft";
+import { EffortSelect, keepEffort, ModelSelect, modelsFor, useAgentModels } from "../ModelSelect";
 
 export function StageForm({
   stage,
   taskCount,
   onChange,
-  onAddPhase,
-  onRemovePhase,
 }: {
   stage: DraftStage;
   taskCount: number;
   onChange: (patch: Partial<DraftStage>) => void;
-  onAddPhase: () => void;
-  onRemovePhase: (phaseId: string) => void;
 }) {
-  const setPhase = (index: number, patch: Partial<DraftPhase>) =>
-    onChange({ phases: stage.phases.map((phase, i) => (i === index ? { ...phase, ...patch } : phase)) });
+  const models = useAgentModels();
+  const defaults = stage.agentDefaults;
+  const setDefaults = (patch: Partial<StageAgentDefaults>) => {
+    const next = { ...defaults, ...patch };
+    // A model belongs to its agent and an effort to its model: drop what a new choice doesn't offer.
+    if ("agent" in patch && models.data && next.agent && next.model && !modelsFor(models.data, next.agent).includes(next.model)) {
+      next.model = null;
+    }
+    const effort = keepEffort(models.data, next.agent, next.model, next.effort ?? "") || null;
+    onChange({ agentDefaults: { agent: next.agent, model: next.model, effort } });
+  };
 
   return (
-    <div className="binding-form">
-      <header className="section-heading">
-        <h3>{stage.name || "Stage"}</h3>
-      </header>
+    <div className="form-grid wf-form">
+      <div className="field-row">
+        <label className="field field-grow">
+          <span>Name</span>
+          <input value={stage.name} onChange={(event) => onChange({ name: event.target.value })} />
+        </label>
+        <label className="field">
+          <span>WIP limit</span>
+          <input
+            type="number"
+            min={1}
+            value={stage.wipLimit ?? ""}
+            placeholder="None"
+            onChange={(event) => onChange({ wipLimit: event.target.value === "" ? null : Number(event.target.value) })}
+          />
+          <span className="hint">A warning only.</span>
+        </label>
+      </div>
 
-      <div className="form-grid">
+      <div className="field">
+        <span>Coding agent defaults</span>
         <div className="field-row">
+          <label className="field">
+            <span>Agent</span>
+            <select
+              value={defaults.agent ?? ""}
+              onChange={(event) => setDefaults({ agent: (event.target.value || null) as AgentId | null })}
+            >
+              <option value="">None</option>
+              {AGENTS.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="field field-grow">
-            <span>Name</span>
-            <input value={stage.name} onChange={(event) => onChange({ name: event.target.value })} />
+            <span>Model</span>
+            <ModelSelect
+              value={defaults.model ?? ""}
+              agent={defaults.agent}
+              blankLabel="Agent default"
+              onChange={(value) => setDefaults({ model: value || null })}
+            />
           </label>
           <label className="field">
-            <span>WIP limit</span>
-            <input
-              type="number"
-              min={1}
-              value={stage.wipLimit ?? ""}
-              placeholder="None"
-              onChange={(event) => onChange({ wipLimit: event.target.value === "" ? null : Number(event.target.value) })}
+            <span>Effort</span>
+            <EffortSelect
+              value={defaults.effort ?? ""}
+              agent={defaults.agent}
+              model={defaults.model}
+              onChange={(value) => setDefaults({ effort: value || null })}
             />
-            <span className="hint">A warning only.</span>
           </label>
         </div>
-
-        <div className="field">
-          <span>Phases</span>
-          <p className="hint">
-            Tasks work through phases in order. <strong>Auto</strong> phases finish when their actions succeed;{" "}
-            <strong>manual</strong> ones wait for you. Phase definitions are copied onto a task when it enters the stage, so
-            edits here apply from the next visit.
-          </p>
-          <ol className="tpl-phase-rows">
-            {stage.phases.map((phase, index) => (
-              <li key={phase.id} className="tpl-phase-row">
-                <span className="phase-index">{index + 1}.</span>
-                <input
-                  value={phase.name}
-                  aria-label={`Phase ${index + 1} name`}
-                  onChange={(event) => setPhase(index, { name: event.target.value })}
-                />
-                <select
-                  value={phase.completion}
-                  aria-label={`Phase ${index + 1} completion`}
-                  onChange={(event) => setPhase(index, { completion: event.target.value as CompletionMode })}
-                >
-                  {COMPLETION_MODES.map((mode) => (
-                    <option key={mode} value={mode}>
-                      {mode}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Move phase up"
-                  disabled={index === 0}
-                  onClick={() => onChange({ phases: moveItem(stage.phases, index, -1) })}
-                >
-                  <ChevronUp size={13} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Move phase down"
-                  disabled={index === stage.phases.length - 1}
-                  onClick={() => onChange({ phases: moveItem(stage.phases, index, 1) })}
-                >
-                  <ChevronDown size={13} />
-                </button>
-                <button type="button" className="icon-button danger" aria-label={`Delete ${phase.name}`} onClick={() => onRemovePhase(phase.id)}>
-                  <Trash2 size={13} />
-                </button>
-              </li>
-            ))}
-          </ol>
-          <button type="button" className="button small ghost" onClick={onAddPhase}>
-            <Plus size={13} />
-            Add phase
-          </button>
-        </div>
-
-        {taskCount > 0 && (
-          <p className="hint">
-            {taskCount} active {taskCount === 1 ? "task is" : "tasks are"} in this stage. They keep the phases they entered
-            with, and this stage can't be deleted until they move on.
-          </p>
-        )}
+        <p className="hint">
+          Coding-agent actions in this stage use these for whatever they leave blank; the agent's own default (Agents page)
+          comes after. Read as each run starts, so edits apply to the next run.
+        </p>
       </div>
+
+      <p className="hint">
+        A task entering this stage runs its actions top to bottom, one at a time. Add, open and reorder them on the stage's
+        editor. To sign off an agent's work, switch on <strong>Wait for my approval</strong> inside that coding agent; a
+        standalone <strong>Approval</strong> is for checkpoints that follow no agent.
+      </p>
+
+      {taskCount > 0 && (
+        <p className="hint">
+          {taskCount} active {taskCount === 1 ? "task is" : "tasks are"} in this stage. They keep the actions they entered
+          with, and this stage can't be deleted until they move on.
+        </p>
+      )}
     </div>
   );
 }
