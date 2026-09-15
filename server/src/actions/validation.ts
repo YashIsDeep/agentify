@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * Config values are Mustache-rendered just before a run, so a field holding `{{task.title}}.md`
  * can only be checked once its value is known. Anything with a tag in it is left to the run;
- * everything else is checked when the template is saved, which is where a typo is cheap to fix.
+ * everything else is checked when the workflow is saved, which is where a typo is cheap to fix.
  */
 export const isTemplated = (value: string): boolean => value.includes("{{");
 

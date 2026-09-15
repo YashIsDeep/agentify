@@ -1,34 +1,32 @@
 import { randomUUID } from "node:crypto";
-import { CHAIN_TRIGGERS, type CompletionMode, PHASE_TRIGGERS, type Trigger } from "@wm/shared";
-import { count, eq } from "drizzle-orm";
+import { type AgentId, APPROVAL_ACTION } from "@wm/shared";
+import { count } from "drizzle-orm";
 import type { Db, Sqlite } from "../db/client";
 import * as s from "../db/schema";
 
+/** One action in a stage's list; the list runs top to bottom. */
 export interface SeedBinding {
   key: string;
   label: string;
-  trigger: Trigger;
-  /** Phase name within the same stage (phase.* triggers, or to tie manual/stage actions to a phase). */
-  phase?: string;
-  /** Binding key whose run completion fires this one (action.* triggers). */
-  after?: string;
   actionType: string;
   /** Strings of the form "@stage:<name>" resolve to that stage's id. */
   config: Record<string, unknown>;
   enabled?: boolean;
-  askFeedback?: boolean;
+  continueOnFailure?: boolean;
 }
 
 export interface SeedStage {
   name: string;
   wipLimit?: number;
-  phases?: { name: string; completion: CompletionMode }[];
+  agentDefaults?: { agent?: AgentId; model?: string; effort?: string };
   bindings?: SeedBinding[];
 }
 
 export interface SeedWorkflow {
   name: string;
   description: string;
+  /** An emoji for the board and the sidebar. */
+  icon?: string;
   stages: SeedStage[];
 }
 
@@ -37,30 +35,31 @@ const STAGE_REF = "@stage:";
 export function insertWorkflow(db: Db, def: SeedWorkflow, createdAt = Date.now()): string {
   const workflowId = randomUUID();
   db.insert(s.workflows)
-    .values({ id: workflowId, name: def.name, description: def.description, createdAt, updatedAt: createdAt })
+    .values({ id: workflowId, name: def.name, description: def.description, icon: def.icon ?? "", createdAt, updatedAt: createdAt })
     .run();
 
   const stageIds = new Map<string, string>();
-  const phaseIds = new Map<string, string>();
-  const bindingIds = new Map<string, string>();
+  const keys = new Set<string>();
 
   def.stages.forEach((stage, position) => {
     if (stageIds.has(stage.name)) throw new Error(`${def.name}: duplicate stage "${stage.name}"`);
     const stageId = randomUUID();
     stageIds.set(stage.name, stageId);
     db.insert(s.stages)
-      .values({ id: stageId, workflowId, name: stage.name, position, wipLimit: stage.wipLimit ?? null })
+      .values({
+        id: stageId,
+        workflowId,
+        name: stage.name,
+        position,
+        wipLimit: stage.wipLimit ?? null,
+        defaultAgent: stage.agentDefaults?.agent ?? null,
+        defaultModel: stage.agentDefaults?.model ?? null,
+        defaultEffort: stage.agentDefaults?.effort ?? null,
+      })
       .run();
-    (stage.phases ?? []).forEach((phase, phasePosition) => {
-      const phaseId = randomUUID();
-      phaseIds.set(`${stage.name}/${phase.name}`, phaseId);
-      db.insert(s.phases)
-        .values({ id: phaseId, stageId, name: phase.name, position: phasePosition, completion: phase.completion })
-        .run();
-    });
     for (const binding of stage.bindings ?? []) {
-      if (bindingIds.has(binding.key)) throw new Error(`${def.name}: duplicate binding key "${binding.key}"`);
-      bindingIds.set(binding.key, randomUUID());
+      if (keys.has(binding.key)) throw new Error(`${def.name}: duplicate binding key "${binding.key}"`);
+      keys.add(binding.key);
     }
   });
 
@@ -77,45 +76,28 @@ export function insertWorkflow(db: Db, def: SeedWorkflow, createdAt = Date.now()
     return value;
   };
 
-  const chains: { id: string; afterBindingId: string }[] = [];
   for (const stage of def.stages) {
     (stage.bindings ?? []).forEach((binding, position) => {
-      const where = `${def.name}/${stage.name}/${binding.key}`;
-      const phaseId = binding.phase ? phaseIds.get(`${stage.name}/${binding.phase}`) : undefined;
-      if (binding.phase && !phaseId) throw new Error(`${where}: unknown phase "${binding.phase}"`);
-      if (PHASE_TRIGGERS.includes(binding.trigger) && !phaseId) throw new Error(`${where}: ${binding.trigger} needs a phase`);
-      const id = bindingIds.get(binding.key)!;
-      if (CHAIN_TRIGGERS.includes(binding.trigger)) {
-        const afterBindingId = binding.after ? bindingIds.get(binding.after) : undefined;
-        if (!afterBindingId) throw new Error(`${where}: ${binding.trigger} needs a valid "after" binding`);
-        chains.push({ id, afterBindingId });
-      }
       db.insert(s.actionBindings)
         .values({
-          id,
+          id: randomUUID(),
           workflowId,
           stageId: stageIds.get(stage.name)!,
-          phaseId: phaseId ?? null,
           key: binding.key,
           label: binding.label,
-          trigger: binding.trigger,
           actionType: binding.actionType,
           config: resolveStageRefs(binding.config) as Record<string, unknown>,
           enabled: binding.enabled ?? true,
-          askFeedback: binding.askFeedback ?? false,
+          continueOnFailure: binding.continueOnFailure ?? false,
           position,
         })
         .run();
     });
   }
-  // Chains may point at bindings inserted later, so link them once every binding exists.
-  for (const chain of chains) {
-    db.update(s.actionBindings).set({ afterBindingId: chain.afterBindingId }).where(eq(s.actionBindings.id, chain.id)).run();
-  }
   return workflowId;
 }
 
-/** Seeds the default templates into an empty database. Returns false if workflows already exist. */
+/** Seeds the default workflows into an empty database. Returns false if workflows already exist. */
 export function seedDefaultWorkflows(db: Db, sqlite: Sqlite): boolean {
   const existing = db.select({ n: count() }).from(s.workflows).get()?.n ?? 0;
   if (existing > 0) return false;
@@ -126,67 +108,86 @@ export function seedDefaultWorkflows(db: Db, sqlite: Sqlite): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------- default templates
+// ---------------------------------------------------------------- default workflows
 
-const codingAgent = (config: {
+const codingAgent = ({
+  approval,
+  sendBackTo,
+  ...config
+}: {
   autonomy: "read-only" | "autonomous";
   prompt: string;
   continueSession?: boolean;
   saveResultAs?: string;
-}) => ({ agent: "claude", model: "", continueSession: false, saveResultAs: "", ...config });
+  /** Present: the agent waits for your sign-off when it finishes, showing this while it waits. */
+  approval?: string;
+  /** Offers a Send back to this stage beside Approve; changes go to the agent, not a stage. */
+  sendBackTo?: string;
+}) => ({
+  agent: "claude",
+  model: "",
+  continueSession: false,
+  saveResultAs: "",
+  requireApproval: approval !== undefined,
+  approvalInstructions: approval ?? "",
+  sendBackTo: sendBackTo ? `${STAGE_REF}${sendBackTo}` : "",
+  ...config,
+});
 
-const worktree = (key: string, phase: string): SeedBinding => ({
+/**
+ * Carries `.env` over by default: it is the one gitignored path nearly every repository has, it is
+ * small enough to copy, and an agent without it works against a checkout that cannot even start.
+ * Heavier paths such as node_modules are left to you, since linking them shares one directory
+ * between the worktree and the repository.
+ */
+const worktree = (key: string): SeedBinding => ({
   key,
   label: "Ensure worktree",
-  trigger: "phase.started",
-  phase,
   actionType: "ensure-worktree",
-  config: { branchPrefix: "wm/" },
+  config: { branchPrefix: "wm/", carryOver: ".env" },
 });
 
 const next = (key: string): SeedBinding => ({
   key,
   label: "Move to next stage",
-  trigger: "stage.completed",
   actionType: "move-stage",
   config: { target: "next" },
 });
 
-const sendBack = (to: string): SeedBinding => ({
-  key: "sendBack",
-  label: "Send back",
-  trigger: "manual",
-  actionType: "move-stage",
-  config: { target: `${STAGE_REF}${to}` },
-  askFeedback: true,
+export const approval = (
+  key: string,
+  label: string,
+  options: { instructions?: string; sendBackTo?: string; askForNote?: boolean } = {},
+): SeedBinding => ({
+  key,
+  label,
+  actionType: APPROVAL_ACTION,
+  config: {
+    instructions: options.instructions ?? "",
+    sendBackTo: options.sendBackTo ? `${STAGE_REF}${options.sendBackTo}` : "",
+    askForNote: options.askForNote ?? true,
+  },
 });
 
 /**
- * Integration bindings ship switched off: they need a connection, and the template editor
- * refuses to enable one without it. They are here so the shape is obvious to copy.
+ * Integration actions ship switched off: they need a connection, and the workflow editor refuses
+ * to enable one without it. A tracker update failing shouldn't hold up the code work, so they carry on.
  */
-const jira = (key: string, label: string, status: string, trigger: Trigger, phase?: string): SeedBinding => ({
+const jira = (key: string, label: string, status: string): SeedBinding => ({
   key,
   label,
-  trigger,
-  phase,
   actionType: "jira-transition",
   config: { connectionId: "", issue: "{{task.links.jira}}", transition: status, comment: "" },
   enabled: false,
+  continueOnFailure: true,
 });
 
 const submitMr = (): SeedStage => ({
   name: "Submit MR",
-  phases: [
-    { name: "Open MR", completion: "auto" },
-    { name: "Merged", completion: "manual" },
-  ],
   bindings: [
     {
       key: "openMr",
       label: "Push & open MR",
-      trigger: "phase.started",
-      phase: "Open MR",
       actionType: "open-merge-request",
       config: {
         remote: "origin",
@@ -197,11 +198,11 @@ const submitMr = (): SeedStage => ({
         draft: false,
       },
     },
-    jira("jiraInReview", "Jira → In Review", "In Review", "phase.started", "Open MR"),
+    jira("jiraInReview", "Jira → In Review", "In Review"),
+    approval("merged", "Merged", { instructions: "Approve once {{outputs.openMr.mrUrl}} is merged; that archives the task." }),
     {
       key: "submitArchive",
       label: "Archive task",
-      trigger: "stage.completed",
       actionType: "archive-task",
       config: { removeWorktree: true, force: false },
     },
@@ -214,27 +215,23 @@ const FEEDBACK_BLOCK = `Reviewer feedback from a previous attempt (empty if none
 export const DEFAULT_WORKFLOWS: SeedWorkflow[] = [
   {
     name: "Feature",
+    icon: "✨",
     description: "Requirements → implementation → review → test → merge request.",
     stages: [
       { name: "Backlog" },
       { name: "To Pick" },
       {
         name: "Solidify Reqs",
-        phases: [
-          { name: "Draft requirements", completion: "auto" },
-          { name: "Approve requirements", completion: "manual" },
-        ],
         bindings: [
-          worktree("solidifyWorktree", "Draft requirements"),
+          worktree("solidifyWorktree"),
           {
             key: "draftRequirements",
             label: "Draft requirements",
-            trigger: "phase.started",
-            phase: "Draft requirements",
             actionType: "coding-agent",
             config: codingAgent({
               autonomy: "read-only",
               saveResultAs: "requirements.md",
+              approval: "Read requirements.md under Artifacts. Ask for changes and the agent redrafts it.",
               prompt: `You are solidifying requirements for a software task. Do not modify any files.
 
 Task: {{task.title}}
@@ -256,22 +253,17 @@ Explore the repository as needed, then reply with only a Markdown requirements d
       },
       {
         name: "Implement Reqs",
-        phases: [
-          { name: "Implement", completion: "auto" },
-          { name: "Self-check", completion: "manual" },
-        ],
         bindings: [
-          jira("jiraInProgress", "Jira → In Progress", "In Progress", "stage.entered"),
-          worktree("implementWorktree", "Implement"),
+          jira("jiraInProgress", "Jira → In Progress", "In Progress"),
+          worktree("implementWorktree"),
           {
             key: "implement",
             label: "Implement",
-            trigger: "phase.started",
-            phase: "Implement",
             actionType: "coding-agent",
             config: codingAgent({
               autonomy: "autonomous",
               continueSession: true,
+              approval: "Look over the change in {{task.worktreePath}} before it goes to review.",
               prompt: `Implement the following task in this repository.
 
 Task: {{task.title}}
@@ -290,27 +282,46 @@ Finish with a short summary of what changed.`,
       },
       {
         name: "Review Imp",
-        phases: [{ name: "Review diff", completion: "manual" }],
-        bindings: [sendBack("Implement Reqs"), next("reviewNext")],
+        bindings: [
+          approval("reviewDiff", "Review diff", {
+            instructions: "Review the diff on {{task.branch}} against {{task.baseBranch}}.",
+            sendBackTo: "Implement Reqs",
+          }),
+          next("reviewNext"),
+        ],
       },
       {
         name: "Test Imp",
-        phases: [
-          { name: "Run tests", completion: "auto" },
-          { name: "Manual QA", completion: "manual" },
-        ],
         bindings: [
+          /**
+           * Also switched off, because only you know how this repository installs. It is seeded
+           * anyway so the step is visible: a worktree is a clean checkout, so unless the worktree
+           * action carries node_modules across, the tests below run against an empty one and fail
+           * for a reason that has nothing to do with the task.
+           */
+          {
+            key: "installDeps",
+            label: "Install dependencies",
+            actionType: "shell",
+            config: { command: "npm ci", cwd: "worktree" },
+            enabled: false,
+          },
+          /**
+           * Ships switched off: there's no way to know this repository's test command, and a stage
+           * that quietly echoes a placeholder would sign a task off as tested when nothing ran.
+           * The placeholder exits non-zero too, so enabling it before editing it fails loudly.
+           */
           {
             key: "runTests",
             label: "Run tests",
-            trigger: "phase.started",
-            phase: "Run tests",
             actionType: "shell",
             config: {
-              command: 'echo No test command configured. Edit the "Run tests" action for this workflow.',
+              command: 'echo No test command configured. Edit the "Run tests" action for this workflow. && exit 1',
               cwd: "worktree",
             },
+            enabled: false,
           },
+          approval("manualQa", "Manual QA"),
           next("testNext"),
         ],
       },
@@ -319,26 +330,22 @@ Finish with a short summary of what changed.`,
   },
   {
     name: "Bugfix",
+    icon: "🐛",
     description: "Reproduce → fix → review → merge request.",
     stages: [
       { name: "Backlog" },
       {
         name: "Reproduce",
-        phases: [
-          { name: "Investigate", completion: "auto" },
-          { name: "Confirm reproduction", completion: "manual" },
-        ],
         bindings: [
-          worktree("reproduceWorktree", "Investigate"),
+          worktree("reproduceWorktree"),
           {
             key: "investigate",
             label: "Investigate",
-            trigger: "phase.started",
-            phase: "Investigate",
             actionType: "coding-agent",
             config: codingAgent({
               autonomy: "read-only",
               saveResultAs: "reproduction.md",
+              approval: "Read reproduction.md under Artifacts. Ask for changes and the agent digs further.",
               prompt: `Investigate this bug. Do not modify any files.
 
 Bug: {{task.title}}
@@ -353,29 +360,24 @@ Reply with only a Markdown report: reproduction steps, expected vs actual behavi
       },
       {
         name: "Fix",
-        phases: [
-          { name: "Fix", completion: "auto" },
-          { name: "Self-check", completion: "manual" },
-        ],
         bindings: [
           {
             key: "linearInProgress",
             label: "Linear → In Progress",
-            trigger: "stage.entered",
             actionType: "linear-update",
             config: { connectionId: "", issue: "{{task.links.linear}}", state: "In Progress", comment: "" },
             enabled: false,
+            continueOnFailure: true,
           },
-          worktree("fixWorktree", "Fix"),
+          worktree("fixWorktree"),
           {
             key: "fix",
             label: "Fix",
-            trigger: "phase.started",
-            phase: "Fix",
             actionType: "coding-agent",
             config: codingAgent({
               autonomy: "autonomous",
               continueSession: true,
+              approval: "Look over the fix in {{task.worktreePath}} before it goes to review.",
               prompt: `Fix this bug in the repository.
 
 Bug: {{task.title}}
@@ -393,73 +395,15 @@ Add a regression test, keep the change minimal, and commit with a clear message.
       },
       {
         name: "Review",
-        phases: [{ name: "Review diff", completion: "manual" }],
-        bindings: [sendBack("Fix"), next("reviewNext")],
+        bindings: [
+          approval("reviewFix", "Review diff", {
+            instructions: "Review the diff on {{task.branch}} against {{task.baseBranch}}.",
+            sendBackTo: "Fix",
+          }),
+          next("reviewNext"),
+        ],
       },
       submitMr(),
-    ],
-  },
-  {
-    name: "Spike",
-    description: "Research a question and write it up.",
-    stages: [
-      { name: "Backlog" },
-      {
-        name: "Research",
-        phases: [
-          { name: "Research", completion: "auto" },
-          { name: "Review findings", completion: "manual" },
-        ],
-        bindings: [
-          worktree("researchWorktree", "Research"),
-          {
-            key: "research",
-            label: "Research",
-            trigger: "phase.started",
-            phase: "Research",
-            actionType: "coding-agent",
-            config: codingAgent({
-              autonomy: "read-only",
-              saveResultAs: "findings.md",
-              prompt: `Research the following question. Do not modify any files.
-
-Question: {{task.title}}
-
-{{task.description}}
-
-Reply with only a Markdown write-up: summary, options considered with trade-offs, recommendation, and open questions.`,
-            }),
-          },
-          next("researchNext"),
-        ],
-      },
-      {
-        name: "Write-up",
-        phases: [{ name: "Write up", completion: "manual" }],
-        bindings: [
-          {
-            key: "notionWriteup",
-            label: "Publish findings to Notion",
-            trigger: "manual",
-            actionType: "notion-append",
-            config: {
-              connectionId: "",
-              mode: "create-page",
-              target: "",
-              title: "{{task.title}}",
-              content: '{{artifacts["findings.md"]}}',
-            },
-            enabled: false,
-          },
-          {
-            key: "writeupArchive",
-            label: "Archive task",
-            trigger: "stage.completed",
-            actionType: "archive-task",
-            config: { removeWorktree: true, force: false },
-          },
-        ],
-      },
     ],
   },
 ];

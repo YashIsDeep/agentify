@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SaveWorkflowInput, WorkflowDef } from "@wm/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { approval } from "../src/seed/workflows";
 import { createHarness, type Harness, removeDir } from "./helpers";
 
 let h: Harness;
@@ -14,45 +17,57 @@ afterEach(async () => {
   removeDir(h.dataDir);
 });
 
-/** The editor sends the whole template back; this mirrors what its draft looks like. */
+/** The editor sends the whole workflow back; this mirrors what its draft looks like. */
 function draft(workflow: WorkflowDef): SaveWorkflowInput {
   return {
     name: workflow.name,
     description: workflow.description,
+    icon: workflow.icon,
     updatedAt: workflow.updatedAt,
     stages: workflow.stages.map((stage) => ({
       id: stage.id,
       name: stage.name,
       wipLimit: stage.wipLimit,
-      phases: stage.phases.map(({ id, name, completion }) => ({ id, name, completion })),
+      agentDefaults: stage.agentDefaults,
       bindings: stage.bindings.map((binding) => ({
         id: binding.id,
         key: binding.key,
         label: binding.label,
-        trigger: binding.trigger,
-        phaseId: binding.phaseId,
-        afterBindingId: binding.afterBindingId,
         actionType: binding.actionType,
         config: binding.config,
         enabled: binding.enabled,
-        askFeedback: binding.askFeedback,
+        continueOnFailure: binding.continueOnFailure,
       })),
     })),
   };
 }
 
 const feature = () => h.engine.listWorkflows().find((w) => w.name === "Feature")!;
-const spike = () => h.engine.listWorkflows().find((w) => w.name === "Spike")!;
+// Spike isn't a default workflow any more; these tests only need its stage shape, so it's added on first use.
+const spike = () =>
+  h.engine.listWorkflows().find((w) => w.name === "Spike") ??
+  h.engine.getWorkflow(
+    h.addWorkflow({
+      name: "Spike",
+      description: "Research a question and write it up.",
+      stages: [
+        { name: "Backlog" },
+        { name: "Research", bindings: [approval("reviewFindings", "Review findings")] },
+        { name: "Write-up", bindings: [approval("writeUp", "Write up")] },
+      ],
+    }),
+  );
 const save = (workflow: WorkflowDef, edit: (input: SaveWorkflowInput) => void) => {
   const input = draft(workflow);
   edit(input);
-  return h.templates.save(workflow.id, input);
+  return h.workflows.save(workflow.id, input);
 };
+const allBindings = (input: SaveWorkflowInput) => input.stages.flatMap((stage) => stage.bindings ?? []);
 
 describe("action catalogue", () => {
   it("publishes editable fields whose defaults satisfy each action's schema", () => {
-    const types = h.templates.actionTypes();
-    expect(types.map((type) => type.type)).toContain("coding-agent");
+    const types = h.workflows.actionTypes();
+    expect(types.map((type) => type.type)).toEqual(expect.arrayContaining(["coding-agent", "approval"]));
 
     for (const type of types) {
       expect(type.fields.length, `${type.type} has no fields`).toBeGreaterThan(0);
@@ -72,12 +87,45 @@ function requiredText(type: string): Record<string, string> {
   ] ?? {};
 }
 
-describe("editing a template", () => {
+describe("stage coding-agent defaults", () => {
+  it("saves, validates and copies each stage's defaults", async () => {
+    const setDefaults = (input: SaveWorkflowInput, agentDefaults: { agent: "claude" | "codex" | null; model: string | null; effort: string | null }) => {
+      input.stages[0]!.agentDefaults = agentDefaults;
+    };
+
+    await expect(save(feature(), (input) => setDefaults(input, { agent: "claude", model: "gpt-5", effort: null }))).rejects.toThrow(
+      /coding-agent defaults: .*not a Claude Code model/,
+    );
+    await expect(save(feature(), (input) => setDefaults(input, { agent: "claude", model: "opus", effort: "turbo" }))).rejects.toThrow(
+      /coding-agent defaults: .*not a reasoning-effort level/,
+    );
+
+    const saved = await save(feature(), (input) => setDefaults(input, { agent: "claude", model: "opus", effort: "max" }));
+    expect(saved.stages[0]!.agentDefaults).toEqual({ agent: "claude", model: "opus", effort: "max" });
+    expect(saved.stages[1]!.agentDefaults).toEqual({ agent: null, model: null, effort: null });
+
+    const copy = h.workflows.create({ name: "Feature copy", copyFromWorkflowId: saved.id });
+    expect(copy.stages[0]!.agentDefaults).toEqual({ agent: "claude", model: "opus", effort: "max" });
+  });
+
+  it("checks an action that leaves its agent blank against the stage's agent", async () => {
+    const blankAgent = (input: SaveWorkflowInput, model: string) => {
+      const stage = input.stages.find((candidate) => candidate.bindings?.some((b) => b.actionType === "coding-agent"))!;
+      stage.agentDefaults = { agent: "claude", model: null, effort: null };
+      const binding = stage.bindings!.find((b) => b.actionType === "coding-agent")!;
+      binding.config = { ...binding.config, agent: "", model };
+    };
+    await expect(save(feature(), (input) => blankAgent(input, "gpt-5"))).rejects.toThrow(/not a Claude Code model/);
+    await expect(save(feature(), (input) => blankAgent(input, "sonnet"))).resolves.toBeDefined();
+  });
+});
+
+describe("editing a workflow", () => {
   it("renames, reorders and adds a stage in one save", async () => {
     const before = feature();
     const saved = await save(before, (input) => {
       input.stages[0]!.name = "Inbox";
-      input.stages.push({ id: randomUUID(), name: "Done", wipLimit: null, phases: [], bindings: [] });
+      input.stages.push({ id: randomUUID(), name: "Done", wipLimit: null, bindings: [] });
       const [first, second, ...rest] = input.stages;
       input.stages = [second!, first!, ...rest];
     });
@@ -87,70 +135,66 @@ describe("editing a template", () => {
     expect(saved.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
 
-  it("adds a phase and an action that references it", async () => {
-    const phaseId = randomUUID();
+  it("adds an action and reorders a stage's list", async () => {
     const bindingId = randomUUID();
     const saved = await save(spike(), (input) => {
       const stage = input.stages.find((candidate) => candidate.name === "Write-up")!;
-      stage.phases = [...(stage.phases ?? []), { id: phaseId, name: "Publish", completion: "auto" }];
       stage.bindings = [
-        ...(stage.bindings ?? []),
         {
           id: bindingId,
           key: "publishNotes",
           label: "Publish notes",
-          trigger: "phase.started",
-          phaseId,
-          afterBindingId: null,
           actionType: "write-artifact",
           config: { name: "notes.md", content: "{{task.title}}" },
-          enabled: true,
-          askFeedback: false,
+          continueOnFailure: true,
         },
+        ...(stage.bindings ?? []),
       ];
     });
 
     const stage = saved.stages.find((candidate) => candidate.name === "Write-up")!;
-    expect(stage.phases.map((phase) => phase.name)).toContain("Publish");
-    expect(stage.bindings.find((binding) => binding.id === bindingId)?.phaseId).toBe(phaseId);
+    expect(stage.bindings.map((binding) => binding.key)).toEqual(["publishNotes", "writeUp"]);
+    expect(stage.bindings[0]).toMatchObject({ id: bindingId, continueOnFailure: true, enabled: true });
+
+    const reordered = await save(saved, (input) => {
+      const writeUp = input.stages.find((candidate) => candidate.name === "Write-up")!;
+      writeUp.bindings = [...writeUp.bindings!].reverse();
+    });
+    expect(reordered.stages.find((candidate) => candidate.name === "Write-up")!.bindings.map((binding) => binding.key)).toEqual([
+      "writeUp",
+      "publishNotes",
+    ]);
   });
 
   it("fills in config defaults and drops unknown keys", async () => {
     const saved = await save(spike(), (input) => {
-      const stage = input.stages[0]!;
-      stage.bindings = [
-        {
-          id: randomUUID(),
-          key: "note",
-          label: "Note",
-          trigger: "stage.entered",
-          phaseId: null,
-          afterBindingId: null,
-          actionType: "shell",
-          config: { command: "echo hi", bogus: "dropped" },
-          enabled: true,
-          askFeedback: false,
-        },
+      input.stages[0]!.bindings = [
+        { id: randomUUID(), key: "note", label: "Note", actionType: "shell", config: { command: "echo hi", bogus: "dropped" } },
       ];
     });
 
-    expect(saved.stages[0]!.bindings[0]!.config).toEqual({ command: "echo hi", shell: "default", cwd: "worktree", extract: {} });
+    expect(saved.stages[0]!.bindings[0]).toMatchObject({
+      config: { command: "echo hi", shell: "default", cwd: "worktree", extract: {} },
+      enabled: true,
+      continueOnFailure: false,
+    });
   });
 
-  it("deletes a phase without disturbing a task already in that stage", async () => {
+  it("edits a stage's actions without disturbing a task already running them", async () => {
     const workflow = spike();
     const research = workflow.stages.find((stage) => stage.name === "Research")!;
     const task = h.engine.createTask({ workflowId: workflow.id, title: "In flight", stageId: research.id });
-    const phasesAtEntry = h.engine.getTaskDetail(task.id).visits.at(-1)!.phases.map((phase) => phase.name);
+    const runsAtEntry = h.engine.getTaskDetail(task.id).visits.at(-1)!.runs.map((run) => [run.bindingKey, run.status]);
+    expect(runsAtEntry).toEqual([["reviewFindings", "awaiting-approval"]]);
 
     await save(spike(), (input) => {
       const stage = input.stages.find((candidate) => candidate.name === "Research")!;
-      stage.phases = stage.phases!.slice(0, 1);
+      stage.bindings = [{ id: randomUUID(), key: "notes", label: "Notes", actionType: "write-artifact", config: { name: "n.md", content: "" } }];
     });
 
-    // Phase states are snapshots taken at entry, so the running task is untouched.
-    expect(h.engine.getTaskDetail(task.id).visits.at(-1)!.phases.map((phase) => phase.name)).toEqual(phasesAtEntry);
-    expect(spike().stages.find((stage) => stage.name === "Research")!.phases).toHaveLength(1);
+    // A visit's runs are created when its actions start, so the running task is untouched.
+    expect(h.engine.getTaskDetail(task.id).visits.at(-1)!.runs.map((run) => [run.bindingKey, run.status])).toEqual(runsAtEntry);
+    expect(spike().stages.find((stage) => stage.name === "Research")!.bindings.map((binding) => binding.key)).toEqual(["notes"]);
   });
 });
 
@@ -168,48 +212,36 @@ describe("refusing edits that would strand tasks or actions", () => {
     expect((await drop()).stages.map((stage) => stage.name)).toEqual(["Backlog", "Write-up"]);
   });
 
-  it("rejects duplicate keys, unknown actions, invalid config and dangling references", async () => {
+  it("rejects duplicate keys, unknown actions and invalid config", async () => {
     const bad = (edit: (input: SaveWorkflowInput) => void) => save(feature(), edit);
-    const firstBinding = (input: SaveWorkflowInput) => input.stages.flatMap((stage) => stage.bindings ?? [])[0]!;
 
-    await expect(bad((input) => (firstBinding(input).key = "openMr"))).rejects.toThrow(/Duplicate action key/);
-    await expect(bad((input) => (firstBinding(input).actionType = "teleport"))).rejects.toThrow(/unknown action type/);
-    await expect(bad((input) => (firstBinding(input).phaseId = randomUUID()))).rejects.toThrow(/phase is not in this stage/);
-    await expect(bad((input) => (firstBinding(input).trigger = "action.succeeded"))).rejects.toThrow(/needs an action to follow/);
+    await expect(bad((input) => (allBindings(input)[0]!.key = "openMr"))).rejects.toThrow(/Duplicate action key/);
+    await expect(bad((input) => (allBindings(input)[0]!.actionType = "teleport"))).rejects.toThrow(/unknown action type/);
     await expect(
       bad((input) => {
-        const agent = input.stages.flatMap((stage) => stage.bindings ?? []).find((binding) => binding.actionType === "coding-agent")!;
-        agent.config = {};
+        allBindings(input).find((binding) => binding.actionType === "coding-agent")!.config = {};
       }),
     ).rejects.toThrow(/prompt/);
   });
 
-  it("rejects a move-stage target that is not in the template", async () => {
+  it("rejects a move-stage target or Send back stage that is not in the workflow", async () => {
     await expect(
       save(feature(), (input) => {
-        const move = input.stages.flatMap((stage) => stage.bindings ?? []).find((binding) => binding.actionType === "move-stage")!;
-        move.config = { target: randomUUID() };
+        allBindings(input).find((binding) => binding.actionType === "move-stage")!.config = { target: randomUUID() };
       }),
-    ).rejects.toThrow(/destination stage is not part of this template/);
-  });
-
-  it("rejects actions that trigger each other in a loop", async () => {
+    ).rejects.toThrow(/destination stage is not part of this workflow/);
     await expect(
       save(feature(), (input) => {
-        const stage = input.stages.find((candidate) => candidate.name === "Solidify Reqs")!;
-        const [a, b] = stage.bindings!;
-        a!.trigger = "action.succeeded";
-        a!.afterBindingId = b!.id;
-        b!.trigger = "action.failed";
-        b!.afterBindingId = a!.id;
+        const gate = allBindings(input).find((binding) => binding.actionType === "approval")!;
+        gate.config = { ...gate.config, sendBackTo: randomUUID() };
       }),
-    ).rejects.toThrow(/loop/);
+    ).rejects.toThrow(/stage it sends back to is not part of this workflow/);
   });
 
   it("rejects a model the chosen agent does not accept", async () => {
-    const setModel = (input: SaveWorkflowInput, agent: string, model: string) => {
-      const binding = input.stages.flatMap((stage) => stage.bindings ?? []).find((b) => b.actionType === "coding-agent")!;
-      binding.config = { ...binding.config, agent, model };
+    const setModel = (input: SaveWorkflowInput, agent: string, model: string, effort = "") => {
+      const binding = allBindings(input).find((b) => b.actionType === "coding-agent")!;
+      binding.config = { ...binding.config, agent, model, effort };
     };
 
     // The exact mistake that used to surface only once the agent ran.
@@ -220,6 +252,10 @@ describe("refusing edits that would strand tasks or actions", () => {
     await expect(save(feature(), (input) => setModel(input, "claude", "opus"))).resolves.toBeDefined();
     await expect(save(feature(), (input) => setModel(input, "claude", "claude-opus-5"))).resolves.toBeDefined();
     await expect(save(feature(), (input) => setModel(input, "claude", ""))).resolves.toBeDefined();
+
+    // So does the reasoning effort.
+    await expect(save(feature(), (input) => setModel(input, "claude", "opus", "turbo"))).rejects.toThrow(/not a reasoning-effort level/);
+    await expect(save(feature(), (input) => setModel(input, "claude", "opus", "max"))).resolves.toBeDefined();
   });
 
   it("lets an integration action sit unconfigured while it is switched off", async () => {
@@ -227,7 +263,7 @@ describe("refusing edits that would strand tasks or actions", () => {
     await expect(save(feature(), () => {})).resolves.toBeDefined();
 
     const enable = (input: SaveWorkflowInput, connectionId: string) => {
-      const binding = input.stages.flatMap((stage) => stage.bindings ?? []).find((b) => b.actionType === "jira-transition")!;
+      const binding = allBindings(input).find((b) => b.actionType === "jira-transition")!;
       binding.enabled = true;
       binding.config = { ...binding.config, connectionId };
     };
@@ -242,61 +278,96 @@ describe("refusing edits that would strand tasks or actions", () => {
     await expect(save(feature(), (input) => enable(input, connection.id))).rejects.toThrow(/no longer exists/);
   });
 
-  it("refuses a save based on a stale copy of the template", async () => {
+  it("refuses a save based on a stale copy of the workflow", async () => {
     const workflow = feature();
     const stale = draft(workflow);
     await save(workflow, (input) => (input.name = "Feature v2"));
     stale.name = "Feature v3";
-    await expect(h.templates.save(workflow.id, stale)).rejects.toThrow(/changed in another window/);
+    await expect(h.workflows.save(workflow.id, stale)).rejects.toThrow(/changed in another window/);
   });
 });
 
-describe("creating and deleting templates", () => {
-  it("creates a blank template with one stage", () => {
-    const created = h.templates.create({ name: "Chores" });
+describe("creating and deleting workflows", () => {
+  it("creates a blank workflow with one stage", () => {
+    const created = h.workflows.create({ name: "Chores" });
     expect(created.stages.map((stage) => stage.name)).toEqual(["Backlog"]);
     expect(h.engine.listWorkflows().map((workflow) => workflow.name)).toContain("Chores");
   });
 
-  it("duplicates a template with fresh ids and remapped references", () => {
+  it("keeps a workflow's icon, and defaults it to none", async () => {
+    const created = h.workflows.create({ name: "Chores", icon: "🧹" });
+    expect(created.icon).toBe("🧹");
+    expect(h.workflows.create({ name: "Plain" }).icon).toBe("");
+
+    const saved = await save(created, (input) => {
+      input.icon = "♻️";
+    });
+    expect(saved.icon).toBe("♻️");
+    expect(h.engine.getWorkflow(created.id).icon).toBe("♻️");
+  });
+
+  it("duplicates a workflow with fresh ids and remapped references", () => {
     const source = feature();
-    const copy = h.templates.create({ name: "Feature copy", copyFromWorkflowId: source.id });
+    const copy = h.workflows.create({ name: "Feature copy", copyFromWorkflowId: source.id });
 
     expect(copy.id).not.toBe(source.id);
     expect(copy.stages.map((stage) => stage.name)).toEqual(source.stages.map((stage) => stage.name));
+    expect(copy.stages.map((stage) => stage.bindings.map((b) => b.key))).toEqual(source.stages.map((stage) => stage.bindings.map((b) => b.key)));
 
     const copyStageIds = new Set(copy.stages.map((stage) => stage.id));
-    const copyBindingIds = new Set(copy.stages.flatMap((stage) => stage.bindings.map((binding) => binding.id)));
-    const sourceIds = new Set([
-      ...source.stages.map((stage) => stage.id),
-      ...source.stages.flatMap((stage) => [...stage.phases.map((p) => p.id), ...stage.bindings.map((b) => b.id)]),
-    ]);
+    const sourceIds = new Set([...source.stages.map((stage) => stage.id), ...source.stages.flatMap((stage) => stage.bindings.map((b) => b.id))]);
 
+    let sendBacks = 0;
     for (const stage of copy.stages) {
       expect(sourceIds.has(stage.id)).toBe(false);
       for (const binding of stage.bindings) {
         expect(sourceIds.has(binding.id)).toBe(false);
-        if (binding.phaseId) expect(stage.phases.map((phase) => phase.id)).toContain(binding.phaseId);
-        if (binding.afterBindingId) expect(copyBindingIds).toContain(binding.afterBindingId);
-        // "Send back" points at a stage id, which must now be the copy's own stage.
+        // Stage ids inside config must now be the copy's own stages.
         if (binding.actionType === "move-stage" && binding.config.target !== "next") {
           expect(copyStageIds).toContain(binding.config.target);
         }
+        if (binding.actionType === "approval" && binding.config.sendBackTo) {
+          sendBacks++;
+          expect(copyStageIds).toContain(binding.config.sendBackTo);
+        }
       }
     }
+    expect(sendBacks).toBeGreaterThan(0);
   });
 
-  it("deletes an unused template but keeps one that tasks still reference", () => {
-    const chores = h.templates.create({ name: "Chores" });
+  it("deletes an unused workflow but keeps one that tasks still reference", async () => {
+    const chores = h.workflows.create({ name: "Chores" });
     const task = h.engine.createTask({ workflowId: chores.id, title: "Take out the bins" });
 
-    expect(() => h.templates.remove(chores.id)).toThrow(/1 active task/);
+    await expect(h.workflows.remove(chores.id)).rejects.toThrow(/1 active task/);
 
     h.engine.markArchived(task.id, { worktreeRemoved: false });
-    expect(() => h.templates.remove(chores.id)).toThrow(/1 archived task/);
+    await expect(h.workflows.remove(chores.id)).rejects.toThrow(/1 archived task/);
 
-    const spare = h.templates.create({ name: "Spare" });
-    h.templates.remove(spare.id);
+    const spare = h.workflows.create({ name: "Spare" });
+    await h.workflows.remove(spare.id);
     expect(h.engine.listWorkflows().map((workflow) => workflow.name)).not.toContain("Spare");
+  });
+
+  it("force-deletes a workflow together with its tasks and their files", async () => {
+    const chores = h.workflows.create({ name: "Chores" });
+    const active = h.engine.createTask({ workflowId: chores.id, title: "Active" });
+    const archived = h.engine.createTask({ workflowId: chores.id, title: "Archived" });
+    h.engine.markArchived(archived.id, { worktreeRemoved: false });
+    mkdirSync(h.paths.artifactDir(active.id), { recursive: true });
+    writeFileSync(join(h.paths.artifactDir(active.id), "notes.md"), "gone with the task");
+    const bystander = h.engine.createTask({ workflowId: feature().id, title: "Elsewhere" });
+
+    await h.workflows.remove(chores.id, { force: true });
+
+    expect(h.engine.listWorkflows().map((workflow) => workflow.name)).not.toContain("Chores");
+    expect(h.engine.findTask(active.id)).toBeUndefined();
+    expect(h.engine.findTask(archived.id)).toBeUndefined();
+    const timeline = h.sqlite
+      .prepare("SELECT count(*) AS n FROM timeline_events WHERE task_id IN (?, ?)")
+      .get(active.id, archived.id) as { n: number };
+    expect(timeline.n).toBe(0);
+    expect(existsSync(h.paths.taskDir(active.id))).toBe(false);
+    expect(h.engine.findTask(bystander.id)).toBeDefined();
   });
 });

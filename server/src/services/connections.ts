@@ -36,7 +36,7 @@ const EMPTY: SecretsFile = { version: 1, connections: [] };
  * Named credentials for the integration actions.
  *
  * They live in `secrets.json` beside the database rather than in it, so the database stays
- * safe to copy, inspect and export while the tokens do not travel with a template. Secret
+ * safe to copy, inspect and export while the tokens do not travel with a workflow. Secret
  * field values never leave this process: the API reports only which ones are set.
  */
 export class ConnectionService {
@@ -136,14 +136,14 @@ export class ConnectionService {
    * Actions pass their own adapter, so the client comes back typed.
    */
   client<T>(id: string, adapter: ConnectionAdapter<T>): { connection: ConnectionRecord; client: T } {
-    if (!id) throw new Error(`This action has no ${adapter.label} connection selected. Pick one in the template editor.`);
+    if (!id) throw new Error(`This action has no ${adapter.label} connection selected. Pick one in the workflow editor.`);
     const connection = this.read().connections.find((candidate) => candidate.id === id);
     if (!connection) throw new Error(`The ${adapter.label} connection this action used has been deleted. Pick another one.`);
     if (connection.type !== adapter.type) throw new Error(`“${connection.name}” is a ${connection.type} connection, not ${adapter.label}`);
     return { connection, client: adapter.client(connection.values, this.http) };
   }
 
-  /** Whether a template may enable an action bound to this connection. */
+  /** Whether a workflow may enable an action bound to this connection. */
   exists(id: string, type: ConnectionType): boolean {
     return this.read().connections.some((connection) => connection.id === id && connection.type === type);
   }

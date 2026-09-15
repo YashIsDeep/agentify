@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   type ActionTypeInfo,
   AGENT_IDS,
   type AgentId,
-  CHAIN_TRIGGERS,
+  APPROVAL_ACTION,
   type CreateWorkflowInput,
   createWorkflowSchema,
-  PHASE_TRIGGERS,
+  NO_STAGE_AGENT_DEFAULTS,
   type SaveWorkflowInput,
   saveWorkflowSchema,
   type StageDef,
@@ -20,21 +21,22 @@ import type { AgentService } from "../agents/service";
 import type { Db, Sqlite } from "../db/client";
 import * as s from "../db/schema";
 import { EngineError, type Engine } from "../engine/engine";
+import { git } from "../lib/git";
+import { type Paths, purgeTaskDir } from "../paths";
 import type { ConnectionService } from "./connections";
 
 type StageInput = z.output<typeof saveWorkflowSchema>["stages"][number];
-type BindingInput = StageInput["bindings"][number];
 
 /**
- * Create / edit / delete workflow templates.
+ * Create / edit / delete workflows.
  *
- * Editing a live template is safe because the runtime keeps its own copies: stage visits
- * snapshot the stage name, phase states snapshot the phase definitions, and action runs
- * snapshot their config. So edits apply from the next stage visit onwards and history
- * never changes underneath a task. The one thing that would strand a task is deleting the
- * stage it is standing in, which `save` refuses.
+ * Editing a live workflow is safe because the runtime keeps its own copies: stage visits
+ * snapshot the stage name, and a visit's runs are created (config included) when its actions
+ * start. So edits apply from the next stage visit onwards and history never changes underneath
+ * a task. The one thing that would strand a task is deleting the stage it is standing in, which
+ * `save` refuses.
  */
-export class TemplateService {
+export class WorkflowService {
   constructor(
     private readonly db: Db,
     private readonly sqlite: Sqlite,
@@ -42,6 +44,7 @@ export class TemplateService {
     private readonly engine: Engine,
     private readonly connections: ConnectionService,
     private readonly agents: AgentService,
+    private readonly paths: Paths,
   ) {}
 
   actionTypes(): ActionTypeInfo[] {
@@ -62,12 +65,12 @@ export class TemplateService {
       const now = Date.now();
       this.db
         .insert(s.workflows)
-        .values({ id, name: input.name, description: input.description, createdAt: now, updatedAt: now })
+        .values({ id, name: input.name, description: input.description, icon: input.icon, createdAt: now, updatedAt: now })
         .run();
 
       const stages = input.copyFromWorkflowId
         ? copyStages(this.engine.getWorkflow(input.copyFromWorkflowId).stages)
-        : [{ id: randomUUID(), name: "Backlog", wipLimit: null, phases: [], bindings: [] }];
+        : [{ id: randomUUID(), name: "Backlog", wipLimit: null, agentDefaults: { ...NO_STAGE_AGENT_DEFAULTS }, bindings: [] }];
       this.write(id, stages);
       return this.engine.getWorkflow(id);
     })();
@@ -86,7 +89,7 @@ export class TemplateService {
     return this.sqlite.transaction(() => {
       const current = this.engine.getWorkflow(id); // 404s if it's gone
       if (input.updatedAt !== undefined && input.updatedAt !== current.updatedAt) {
-        throw new EngineError("This template changed in another window. Reload before saving.", 409);
+        throw new EngineError("This workflow changed in another window. Reload before saving.", 409);
       }
 
       this.guardStageDeletions(id, current, stages);
@@ -94,7 +97,7 @@ export class TemplateService {
       const now = Date.now();
       this.db
         .update(s.workflows)
-        .set({ name: input.name, description: input.description, updatedAt: now })
+        .set({ name: input.name, description: input.description, icon: input.icon, updatedAt: now })
         .where(eq(s.workflows.id, id))
         .run();
       this.write(id, stages, current);
@@ -102,19 +105,41 @@ export class TemplateService {
     })();
   }
 
-  remove(id: string): void {
-    this.sqlite.transaction(() => {
-      const workflow = this.engine.getWorkflow(id);
-      const usage = this.engine.workflowUsage(id);
-      const total = usage.activeTasks + usage.archivedTasks;
-      if (total > 0) {
-        throw new EngineError(
-          `“${workflow.name}” still has ${describeTasks(usage)}. Templates are kept as long as any task references them.`,
-          409,
-        );
-      }
+  /**
+   * A workflow that tasks still reference is kept unless `force`d, which deletes those tasks with it:
+   * their runs are stopped, their worktrees removed (branches kept) and their files purged.
+   */
+  async remove(id: string, options: { force?: boolean } = {}): Promise<void> {
+    this.refuseIfInUse(id, options);
+    const tasks = this.db.select().from(s.tasks).where(eq(s.tasks.workflowId, id)).all();
+
+    // Stop agents before pulling their worktrees out from under them. One at a time: git locks the worktree list.
+    for (const task of tasks) this.engine.cancelActiveRuns(task.id);
+    for (const task of tasks) await removeWorktree(task);
+
+    const deleted = this.sqlite.transaction(() => {
+      this.refuseIfInUse(id, options); // a task may have been created meanwhile
+      const taskIds = this.db
+        .select({ id: s.tasks.id })
+        .from(s.tasks)
+        .where(eq(s.tasks.workflowId, id))
+        .all()
+        .map((row) => row.id);
+      this.engine.deleteTasks(taskIds);
       this.db.delete(s.workflows).where(eq(s.workflows.id, id)).run(); // cascades to stages/phases/bindings
+      return taskIds;
     })();
+    await Promise.all(deleted.map((taskId) => purgeTaskDir(this.paths, taskId)));
+  }
+
+  private refuseIfInUse(id: string, { force }: { force?: boolean }): void {
+    const workflow = this.engine.getWorkflow(id); // 404s if it's gone
+    const usage = this.engine.workflowUsage(id);
+    if (force || usage.activeTasks + usage.archivedTasks === 0) return;
+    throw new EngineError(
+      `“${workflow.name}” still has ${describeTasks(usage)}. Delete it with its tasks, or keep it while they need it.`,
+      409,
+    );
   }
 
   // ---------------------------------------------------------------- validation
@@ -128,32 +153,13 @@ export class TemplateService {
 
     const bindings = stages.flatMap((stage) => stage.bindings.map((binding) => ({ binding, stage })));
     seen("stage id", stages.map((stage) => stage.id));
-    seen("phase id", stages.flatMap((stage) => stage.phases.map((phase) => phase.id)));
     seen("action id", bindings.map(({ binding }) => binding.id));
     seen("action key", bindings.map(({ binding }) => binding.key));
 
     const stageIds = new Set(stages.map((stage) => stage.id));
-    const bindingsById = new Map(bindings.map(({ binding }) => [binding.id, binding]));
 
     for (const { binding, stage } of bindings) {
       const where = `${stage.name} → ${binding.label}`;
-      const phaseIds = new Set(stage.phases.map((phase) => phase.id));
-
-      if (binding.phaseId && !phaseIds.has(binding.phaseId)) {
-        throw new EngineError(`${where}: the chosen phase is not in this stage`);
-      }
-      if (PHASE_TRIGGERS.includes(binding.trigger) && !binding.phaseId) {
-        throw new EngineError(`${where}: “${binding.trigger}” needs a phase`);
-      }
-      if (CHAIN_TRIGGERS.includes(binding.trigger)) {
-        if (!binding.afterBindingId) throw new EngineError(`${where}: “${binding.trigger}” needs an action to follow`);
-        if (!bindingsById.has(binding.afterBindingId)) {
-          throw new EngineError(`${where}: the action it follows no longer exists`);
-        }
-      } else if (binding.afterBindingId) {
-        throw new EngineError(`${where}: only action.succeeded / action.failed can follow another action`);
-      }
-
       const action = this.registry.get(binding.actionType);
       if (!action) throw new EngineError(`${where}: unknown action type “${binding.actionType}”`);
 
@@ -165,8 +171,13 @@ export class TemplateService {
       if (binding.actionType === "move-stage") {
         const target = (binding.config as { target: string }).target;
         if (target !== "next" && !stageIds.has(target)) {
-          throw new EngineError(`${where}: its destination stage is not part of this template`);
+          throw new EngineError(`${where}: its destination stage is not part of this workflow`);
         }
+      }
+      // Both the Approval action and a coding agent's own approval can offer a Send back.
+      const sendBackTo = (binding.config as { sendBackTo?: string }).sendBackTo;
+      if (sendBackTo && !stageIds.has(sendBackTo)) {
+        throw new EngineError(`${where}: the stage it sends back to is not part of this workflow`);
       }
 
       // Integration actions may sit unconfigured as long as they are switched off; enabling
@@ -179,22 +190,27 @@ export class TemplateService {
         }
       }
     }
-
-    detectChainCycles(bindingsById);
     return stages;
   }
 
   /**
    * A bad model used to surface only when the agent ran, halfway through a workflow. Catching it
-   * here means a template can't be saved with a model its agent doesn't accept.
+   * here means a workflow can't be saved with a model its agent doesn't accept, or an effort
+   * level that model doesn't offer — on an action or in a stage's defaults.
    */
   private async validateAgentModels(stages: StageInput[]): Promise<void> {
     for (const stage of stages) {
+      const defaults = stage.agentDefaults;
+      const stageError = await this.agents.validateChoiceFor(defaults.agent, defaults.model, defaults.effort);
+      if (stageError) throw new EngineError(`${stage.name} → coding-agent defaults: ${stageError}`);
+
       for (const binding of stage.bindings) {
         if (binding.actionType !== "coding-agent") continue;
-        const config = binding.config as { agent?: string; model?: string };
-        const agent = AGENT_IDS.includes(config.agent as AgentId) ? (config.agent as AgentId) : "claude";
-        const error = await this.agents.validateModel(agent, config.model);
+        const config = binding.config as { agent?: string; model?: string; effort?: string };
+        // A blank agent takes the stage's. With neither, the agent is only settled at run time (a
+        // task override, else Claude), so the choice just has to suit some agent — as for a task override.
+        const agent = AGENT_IDS.includes(config.agent as AgentId) ? (config.agent as AgentId) : defaults.agent;
+        const error = await this.agents.validateChoiceFor(agent, config.model, config.effort);
         if (error) throw new EngineError(`${stage.name} → ${binding.label}: ${error}`);
       }
     }
@@ -218,8 +234,8 @@ export class TemplateService {
   /**
    * Applies `stages` as the complete set for the workflow.
    *
-   * Order matters: bindings are re-pointed before their old phase or stage is deleted,
-   * because both cascade to `action_bindings` and would otherwise take live rows with them.
+   * Order matters: bindings are re-pointed before their old stage is deleted, because that
+   * cascades to `action_bindings` and would otherwise take live rows with it.
    */
   private write(workflowId: string, stages: StageInput[], current?: WorkflowDef): void {
     const keptBindings = stages.flatMap((stage) => stage.bindings.map((binding) => ({ binding, stage })));
@@ -234,23 +250,13 @@ export class TemplateService {
     }
 
     stages.forEach((stage, position) => {
-      const values = { id: stage.id, workflowId, name: stage.name, position, wipLimit: stage.wipLimit };
+      const { agent: defaultAgent, model: defaultModel, effort: defaultEffort } = stage.agentDefaults;
+      const set = { name: stage.name, position, wipLimit: stage.wipLimit, defaultAgent, defaultModel, defaultEffort };
       this.db
         .insert(s.stages)
-        .values(values)
-        .onConflictDoUpdate({ target: s.stages.id, set: { name: values.name, position, wipLimit: values.wipLimit } })
+        .values({ id: stage.id, workflowId, ...set })
+        .onConflictDoUpdate({ target: s.stages.id, set })
         .run();
-
-      stage.phases.forEach((phase, phasePosition) => {
-        this.db
-          .insert(s.phases)
-          .values({ id: phase.id, stageId: stage.id, name: phase.name, position: phasePosition, completion: phase.completion })
-          .onConflictDoUpdate({
-            target: s.phases.id,
-            set: { stageId: stage.id, name: phase.name, position: phasePosition, completion: phase.completion },
-          })
-          .run();
-      });
     });
 
     keptBindings.forEach(({ binding, stage }, position) => {
@@ -258,38 +264,19 @@ export class TemplateService {
         id: binding.id,
         workflowId,
         stageId: stage.id,
-        phaseId: binding.phaseId,
-        // Linked in a second pass: the target may not exist yet.
-        afterBindingId: null,
         key: binding.key,
         label: binding.label,
-        trigger: binding.trigger,
         actionType: binding.actionType,
         config: binding.config,
         enabled: binding.enabled,
-        askFeedback: binding.askFeedback,
+        continueOnFailure: binding.continueOnFailure,
         position,
       };
       const { id: _id, workflowId: _workflowId, ...set } = values;
       this.db.insert(s.actionBindings).values(values).onConflictDoUpdate({ target: s.actionBindings.id, set }).run();
     });
 
-    for (const { binding } of keptBindings) {
-      if (!binding.afterBindingId) continue;
-      this.db
-        .update(s.actionBindings)
-        .set({ afterBindingId: binding.afterBindingId })
-        .where(eq(s.actionBindings.id, binding.id))
-        .run();
-    }
-
     if (!current) return;
-    const gonePhases = removed(
-      current.stages.flatMap((stage) => stage.phases),
-      stages.flatMap((stage) => stage.phases),
-    );
-    if (gonePhases.length > 0) this.db.delete(s.phases).where(inArray(s.phases.id, gonePhases)).run();
-
     const goneStages = removed(current.stages, stages);
     if (goneStages.length > 0) this.db.delete(s.stages).where(inArray(s.stages.id, goneStages)).run();
   }
@@ -297,7 +284,7 @@ export class TemplateService {
 
 // ---------------------------------------------------------------- helpers
 
-/** Deep-copies stages with fresh ids, rewriting phase, chain and stage-id references. */
+/** Deep-copies stages with fresh ids, rewriting stage-id references. */
 function copyStages(stages: StageDef[]): StageInput[] {
   const ids = new Map<string, string>();
   const fresh = (old: string) => {
@@ -307,10 +294,9 @@ function copyStages(stages: StageDef[]): StageInput[] {
   };
   for (const stage of stages) {
     fresh(stage.id);
-    for (const phase of stage.phases) fresh(phase.id);
     for (const binding of stage.bindings) fresh(binding.id);
   }
-  // A stage id can appear inside config (move-stage targets); remap those too.
+  // A stage id can appear inside config (move-stage targets, Send back); remap those too.
   const remap = (value: unknown): unknown => {
     if (typeof value === "string") return ids.get(value) ?? value;
     if (Array.isArray(value)) return value.map(remap);
@@ -324,37 +310,27 @@ function copyStages(stages: StageDef[]): StageInput[] {
     id: fresh(stage.id),
     name: stage.name,
     wipLimit: stage.wipLimit,
-    phases: stage.phases.map((phase) => ({ id: fresh(phase.id), name: phase.name, completion: phase.completion })),
+    agentDefaults: { ...stage.agentDefaults },
     bindings: stage.bindings.map((binding) => ({
       id: fresh(binding.id),
       key: binding.key,
       label: binding.label,
-      trigger: binding.trigger,
-      phaseId: binding.phaseId ? fresh(binding.phaseId) : null,
-      afterBindingId: binding.afterBindingId ? fresh(binding.afterBindingId) : null,
       actionType: binding.actionType,
       config: remap(binding.config) as Record<string, unknown>,
       enabled: binding.enabled,
-      askFeedback: binding.askFeedback,
+      continueOnFailure: binding.continueOnFailure,
     })),
   }));
 }
 
-/** `a` fires on `b` which fires on `a` would spin forever at runtime. */
-function detectChainCycles(bindings: Map<string, BindingInput>): void {
-  const state = new Map<string, "visiting" | "done">();
-  const walk = (id: string, path: string[]): void => {
-    if (state.get(id) === "done") return;
-    if (state.get(id) === "visiting") {
-      const cycle = [...path.slice(path.indexOf(id)), id].map((step) => bindings.get(step)?.label ?? step);
-      throw new EngineError(`These actions trigger each other in a loop: ${cycle.join(" → ")}`);
-    }
-    state.set(id, "visiting");
-    const after = bindings.get(id)?.afterBindingId;
-    if (after) walk(after, [...path, id]);
-    state.set(id, "done");
-  };
-  for (const id of bindings.keys()) walk(id, []);
+/** Best effort: a worktree git won't remove is left on disk rather than blocking the delete. */
+async function removeWorktree(task: s.TaskRow): Promise<void> {
+  if (!task.repoPath || !task.worktreePath || !existsSync(task.worktreePath)) return;
+  try {
+    await git(["worktree", "remove", "--force", task.worktreePath], { cwd: task.repoPath });
+  } catch (err) {
+    console.warn(`Could not remove the worktree of deleted task ${task.id}:`, err);
+  }
 }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);

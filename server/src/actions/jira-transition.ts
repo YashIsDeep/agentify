@@ -39,7 +39,7 @@ export const jiraTransitionAction: ActionDefinition<z.output<typeof configSchema
   ],
   async run({ config, services, signal, log }) {
     // Not every task has a Jira issue. An empty reference means "nothing to do" rather than a
-    // failure, so the action can be bound template-wide; a reference that is present but
+    // failure, so the action can be bound workflow-wide; a reference that is present but
     // unreadable is still an error, so a typo never passes silently.
     if (!config.issue.trim()) {
       log("No Jira issue linked to this task — nothing to transition.");
