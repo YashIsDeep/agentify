@@ -12,6 +12,8 @@ const configSchema = z.object({
   /** When non-empty and the worktree is dirty, commit everything with this message first. */
   commitMessage: z.string().default(""),
   draft: z.boolean().default(false),
+  /** Fail when the push worked but no merge request came back, rather than reporting a success with no link. */
+  requireMrUrl: z.boolean().default(true),
 });
 
 export const openMergeRequestAction: ActionDefinition<z.output<typeof configSchema>> = {
@@ -43,21 +45,36 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
       ],
     },
     { name: "draft", label: "Open as draft", kind: "boolean", default: false },
+    {
+      name: "requireMrUrl",
+      label: "Require a merge request link",
+      kind: "boolean",
+      default: true,
+      help: "Fails the run when the push worked but no merge request came back. Turn it off only for a remote that opens merge requests elsewhere; later steps templating mrUrl then render a blank.",
+    },
   ],
   async run({ config, task, signal, log }) {
-    if (!task.worktreePath || !task.branch || !task.baseBranch) {
-      throw new Error("Task has no worktree yet; run ensure-worktree first");
+    // Without a worktree the task works in the repository's checkout, on whatever branch it has.
+    const cwd = task.worktreePath ?? (task.useWorktree ? null : task.repoPath);
+    if (!cwd) {
+      throw new Error(task.repoPath ? "Task has no worktree yet; run ensure-worktree first" : "Task has no repository");
+    }
+    const branch = task.branch ?? (await git(["symbolic-ref", "--short", "HEAD"], { cwd, signal }));
+    const { baseBranch } = task;
+    if (!baseBranch) throw new Error("Pick a base branch in the task's Details so the merge request has a target");
+    if (branch === baseBranch) {
+      throw new Error(`The repository is on ${branch}, the base branch itself; check out a feature branch first`);
     }
     const onLine = (text: string, stream: "stdout" | "stderr") => log(text, stream);
-    const options = { cwd: task.worktreePath, signal, onLine };
+    const options = { cwd, signal, onLine };
 
-    if (config.commitMessage && (await git(["status", "--porcelain"], { cwd: task.worktreePath, signal }))) {
+    if (config.commitMessage && (await git(["status", "--porcelain"], { cwd, signal }))) {
       log("Committing uncommitted changes");
       await git(["add", "-A"], options);
       await git(["commit", "-m", config.commitMessage], options);
     }
 
-    const remoteUrl = await git(["remote", "get-url", config.remote], { cwd: task.worktreePath, signal });
+    const remoteUrl = await git(["remote", "get-url", config.remote], { cwd, signal });
     const host = config.host === "auto" ? (/github\.com[:/]/i.test(remoteUrl) ? "github" : "gitlab") : config.host;
 
     let mrUrl: string | null;
@@ -65,18 +82,18 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
       // Push option values cannot contain newlines.
       const oneLine = (value: string) => value.replace(/\s*\r?\n\s*/g, " ").trim();
       const title = config.draft ? `Draft: ${oneLine(config.title)}` : oneLine(config.title);
-      const args = ["push", "-u", config.remote, task.branch];
-      args.push("-o", "merge_request.create", "-o", `merge_request.target=${task.baseBranch}`);
+      const args = ["push", "-u", config.remote, branch];
+      args.push("-o", "merge_request.create", "-o", `merge_request.target=${baseBranch}`);
       args.push("-o", `merge_request.title=${title}`);
       if (config.description) args.push("-o", `merge_request.description=${oneLine(config.description)}`);
       const output = await git(args, { ...options, includeStderr: true });
       mrUrl = output.match(/https?:\/\/\S+\/merge_requests\/\d+/)?.[0] ?? null;
     } else {
-      await git(["push", "-u", config.remote, task.branch], options);
-      const args = ["pr", "create", "--base", task.baseBranch, "--head", task.branch];
+      await git(["push", "-u", config.remote, branch], options);
+      const args = ["pr", "create", "--base", baseBranch, "--head", branch];
       args.push("--title", config.title, "--body", config.description);
       if (config.draft) args.push("--draft");
-      const result = await runProcess({ command: "gh", args, cwd: task.worktreePath, signal, onLine }).catch(
+      const result = await runProcess({ command: "gh", args, cwd, signal, onLine }).catch(
         (err: NodeJS.ErrnoException) => {
           throw err.code === "ENOENT" ? new Error("GitHub CLI (gh) is not installed") : err;
         },
@@ -86,7 +103,21 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
       mrUrl = result.output.match(/https:\/\/\S+\/pull\/\d+/)?.[0] ?? null;
     }
 
-    if (!mrUrl) log("Pushed, but could not find the merge request URL in the output", "stderr");
+    if (!mrUrl) {
+      // The branch is already on the remote at this point, so the step is safe to run again.
+      const cause =
+        host === "gitlab"
+          ? `${config.remote} may not be a GitLab remote, or may have merge request push options turned off server-side`
+          : "gh pr create printed no pull request link";
+      if (config.requireMrUrl) {
+        throw new Error(
+          `Pushed ${branch} to ${config.remote}, but no merge request URL came back; ${cause}. ` +
+            `The branch itself pushed fine, so retrying this step is safe; ` +
+            `turn off “Require a merge request link” to accept a push without one`,
+        );
+      }
+      log("Pushed, but could not find the merge request URL in the output", "stderr");
+    }
     return { outputs: { mrUrl, host }, summary: mrUrl ?? "branch pushed" };
   },
 };
