@@ -10,12 +10,12 @@ npm install
 npm start
 ```
 
-The API listens on `http://127.0.0.1:4280`. Data lives in `%USERPROFILE%\.workflow-manager`.
+Open `http://127.0.0.1:2712`. Data lives in `%USERPROFILE%\.workflow-manager`.
 
 | Env var | Default | |
 |---|---|---|
 | `WM_DATA_DIR` | `~/.workflow-manager` | database, artifacts, transcripts, worktrees |
-| `WM_PORT` | `4280` | |
+| `WM_PORT` | `2712` | `2711` under `npm run dev`, where Vite holds 2712 |
 | `WM_MAX_CONCURRENT_AGENTS` | `3` | cap on concurrent long-running actions |
 
 `npm start` builds the web app and serves it, with the API, from that address.
@@ -40,20 +40,51 @@ pay-as-you-go API keys.
 Pick the agent per run from the dropdown in the retry dialog, per task in the task drawer, or
 leave it to the binding's default.
 
-**Models are chosen from a dropdown, never typed.** The options come from the CLIs themselves —
-`opencode models` lists whatever providers you have configured, and Claude and Codex offer their
-documented aliases. The same list is checked when a template is saved, so a model the agent doesn't
-accept is rejected there rather than halfway through a workflow. Leave it blank for the CLI default.
+**Models and reasoning effort are chosen from dropdowns, never typed.** The options come from the
+CLIs themselves — `codex debug models` gives your account's Codex models and the effort levels each
+supports, `opencode models --verbose` lists whatever providers you have configured with each model's
+variants, `cursor-agent models` lists your Cursor account's models (pick a thinking variant there;
+Cursor has no separate effort setting), and Claude offers its documented aliases and `--effort`
+levels. The same lists are checked
+when a workflow is saved, so a model the agent doesn't accept, or an effort that model doesn't offer,
+is rejected there rather than halfway through a workflow.
 
-## Templates
+Set a **default model and effort per agent** on the Agents page, and a **default agent, model and
+effort per stage** in the workflow editor. A run takes the first choice it finds: the retry dialog,
+then the task's overrides, then the action, then its stage's default, then that agent's default,
+then the CLI's own. A model or effort set for one agent is never handed to another, and an effort
+goes with the model it was chosen alongside, so a default's effort never lands on a model picked
+somewhere else.
 
-The **Templates** tab edits the workflows themselves: stages and their order, the phases inside
-each stage, and the actions bound to them. Edits are a local draft until you press **Save**.
+**Watching an agent.** Click a coding-agent run to open its chat: the agent's messages, each tool
+call paired with what it returned (click one to expand it), the questions it asked with your
+answers, and a raw log you can copy. The sidebar lists every agent run on the task — earlier
+attempts, retries, other stages — so you can go back to a previous chat. While the agent works the
+view follows along; scroll up and it stays put. Agents run headlessly, so a chat is mostly for
+reading — you can type into it at the two moments the agent is listening: a question it stopped to
+ask, and the approval it waits on when it has finished, where what you send resumes the same session.
 
-Editing a template that tasks are using is safe. A task snapshots its stage's phases when it
-enters, so changes take effect from the next stage visit and nothing rewrites history. The
-server refuses saves that would strand work — deleting a stage with active tasks in it, leaving
-an action pointing at a phase or stage that no longer exists, or duplicating an action key.
+## Workflows
+
+The **Workflows** tab edits a workflow's shape: its stages and their order, and each stage's
+list of actions. A task entering a stage runs its actions top to bottom, one at a time. A coding
+agent can be told to **wait for your approval** when it finishes, so nothing below it runs until you
+approve — or you ask for changes and the same agent picks them up. A standalone **Approval** action
+is for checkpoints that follow no agent, and moving on is just a *Move to stage* action at the end. Edits are a local draft until you press **Save**.
+
+**Reviewing and revising agent work.** Open the task and click **Review & revise** when the result
+is ready. The feedback box stays below the chat: type what you want changed and click **Request
+revision**. The agent resumes its session, updates the result, and returns for review. Repeat as
+often as needed; only **Approve & continue** releases the next workflow action. Send or clear any
+unsent feedback before approving. You can draft feedback while the agent works, and closing the
+chat keeps that draft in this browser tab. New coding-agent actions added in the editor have
+**Wait for my approval when it finishes** enabled by default. For an existing action, enable that
+option and save the workflow before its next stage visit; already-started runs keep their original settings.
+
+Editing a workflow that tasks are using is safe. A task's actions are copied when they start, so
+changes take effect from the next stage visit and nothing rewrites history. The server refuses
+saves that would strand work — deleting a stage with active tasks in it, leaving an action
+pointing at a stage that no longer exists, or duplicating an action key.
 
 ## Tasks
 
@@ -78,11 +109,11 @@ The **Connections** tab holds the credentials the Jira, Linear and Notion action
 **Test** authenticates and tells you who you are, so a bad token fails here rather than mid-workflow.
 
 Credentials are stored in `secrets.json` beside the database, never inside it — so the database
-stays safe to copy and a duplicated template never carries a token with it. Secrets are write-only:
+stays safe to copy and a duplicated workflow never carries a token with it. Secrets are write-only:
 once saved, the browser is only told that they are set.
 
 An integration action can sit unconfigured while it is disabled; enabling one needs a connection,
-and the template editor refuses to save until you pick one.
+and the workflow editor refuses to save until you pick one.
 
 The Jira and Linear actions take their issue from the task's `jira` / `linear` link — set those in
 the task drawer, using a key like `KAN-12` or `ENG-7` (a pasted issue URL works too). A task with no
@@ -92,7 +123,7 @@ present but unreadable is still an error.
 ## Develop
 
 ```bash
-npm run dev          # API on :4280 (reloads) + Vite UI on http://localhost:5173
+npm run dev          # Vite UI on http://localhost:2712 + API on :2711 (reloads)
 npm test             # server + web vitest suites
 npm run typecheck
 npm run db:generate -w server   # after editing server/src/db/schema.ts
@@ -112,7 +143,7 @@ server/
   src/agents/    one adapter per CLI (spawn args + output parser), resolution, run orchestration
   src/integrations/  one adapter + API client per service (Jira, Linear, Notion)
   src/api/       Hono routes, localhost-only guard, SSE
-  src/services/  templates.ts (template editing + validation), connections.ts, archive, settings
-  src/seed/      default workflow templates
+  src/services/  workflows.ts (workflow editing + validation), connections.ts, archive, settings
+  src/seed/      default workflows
   drizzle/       SQL migrations
 ```
