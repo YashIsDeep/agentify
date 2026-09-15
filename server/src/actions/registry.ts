@@ -1,3 +1,4 @@
+import { approvalAction } from "./approval";
 import { archiveTaskAction } from "./archive-task";
 import { codingAgentAction } from "./coding-agent";
 import { ensureWorktreeAction } from "./ensure-worktree";
@@ -33,6 +34,7 @@ export function createDefaultRegistry(): ActionRegistry {
     .register(codingAgentAction)
     .register(shellAction)
     .register(writeArtifactAction)
+    .register(approvalAction)
     .register(moveStageAction)
     .register(ensureWorktreeAction)
     .register(openMergeRequestAction)

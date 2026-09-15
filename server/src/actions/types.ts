@@ -6,13 +6,24 @@ import type { Engine } from "../engine/engine";
 import type { Paths } from "../paths";
 import type { ArchiveOptions } from "../services/archive";
 import type { ConnectionService } from "../services/connections";
+import type { QuestionService } from "../services/questions";
 
 export interface ActionServices {
   engine: Engine;
   paths: Paths;
   agents: AgentService;
   connections: ConnectionService;
+  questions: QuestionService;
   archiveTask(taskId: string, options?: ArchiveOptions): Promise<void>;
+}
+
+/**
+ * Appends to the run's transcript. Most actions just write text; the coding agent passes a whole
+ * entry so its output can be replayed as a conversation instead of a flat log.
+ */
+export interface RunLog {
+  (text: string, stream?: RunLogLine["stream"]): void;
+  (entry: Omit<RunLogLine, "at">): void;
 }
 
 export interface ActionContext<Config> {
@@ -24,7 +35,7 @@ export interface ActionContext<Config> {
   artifactDir: string;
   /** WM_* variables describing the task, for child processes. */
   env: Record<string, string>;
-  log(text: string, stream?: RunLogLine["stream"]): void;
+  log: RunLog;
   signal: AbortSignal;
   services: ActionServices;
   render(template: string): string;
@@ -45,6 +56,18 @@ export class ActionError extends Error {
     readonly details: Omit<ActionResult, "summary">,
   ) {
     super(message);
+  }
+}
+
+/** The agent hit its usage limit. The run waits instead of failing, and is queued again at `resetAt`. */
+export class UsageLimitError extends ActionError {
+  override name = "UsageLimitError";
+  constructor(
+    message: string,
+    readonly resetAt: number,
+    details: Omit<ActionResult, "summary"> = {},
+  ) {
+    super(message, details);
   }
 }
 
