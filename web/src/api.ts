@@ -1,6 +1,7 @@
 import type {
   ActionTypeInfo,
   AgentId,
+  AnswerQuestionInput,
   AgentModelList,
   AgentStatus,
   AgentTestResult,
@@ -11,16 +12,22 @@ import type {
   CreateConnectionInput,
   CreateTaskInput,
   CreateWorkflowInput,
+  CreateWorkspaceInput,
   RepoInfo,
   RunLogLine,
   SaveWorkflowInput,
   TaskDetail,
+  TaskDiff,
+  TaskLink,
   TaskStatus,
   TaskSummary,
+  TicketDraft,
+  TicketDraftSettings,
   UpdateConnectionInput,
   UpdateTaskInput,
   WorkflowDef,
   WorkflowUsage,
+  WorkspaceInfo,
 } from "@wm/shared";
 
 export class ApiError extends Error {
@@ -33,7 +40,7 @@ export class ApiError extends Error {
   }
 }
 
-async function send(path: string, init: { method?: string; json?: unknown } = {}): Promise<Response> {
+async function request(path: string, init: { method?: string; json?: unknown } = {}): Promise<Response> {
   const hasBody = init.json !== undefined;
   const response = await fetch(path, {
     method: init.method ?? "GET",
@@ -48,17 +55,35 @@ async function send(path: string, init: { method?: string; json?: unknown } = {}
 }
 
 const json = async <T>(path: string, init?: { method?: string; json?: unknown }) =>
-  (await (await send(path, init)).json()) as T;
+  (await (await request(path, init)).json()) as T;
 const post = <T>(path: string, body: unknown = {}) => json<T>(path, { method: "POST", json: body });
 const enc = encodeURIComponent;
 
-export const api = {
+export const workspaceApi = {
+  list: () => json<WorkspaceInfo[]>("/api/workspaces"),
+  create: (input: CreateWorkspaceInput) => post<WorkspaceInfo>("/api/workspaces", input),
+  clone: (id: string, input: CreateWorkspaceInput) => post<WorkspaceInfo>(`/api/workspaces/${enc(id)}/clone`, input),
+  rename: (id: string, input: CreateWorkspaceInput) =>
+    json<WorkspaceInfo>(`/api/workspaces/${enc(id)}`, { method: "PATCH", json: input }),
+};
+
+/** Bound once to a workspace: an in-flight callback can never write into a newly selected one. */
+export function createWorkspaceApi(workspaceId: string) {
+  const base = `/api/workspaces/${enc(workspaceId)}`;
+  const send = (path: string, init?: { method?: string; json?: unknown }) => request(base + path.slice(4), init);
+  const json = async <T>(path: string, init?: { method?: string; json?: unknown }) =>
+    (await (await send(path, init)).json()) as T;
+  const post = <T>(path: string, body: unknown = {}) => json<T>(path, { method: "POST", json: body });
+  return {
+  eventsUrl: `${base}/events`,
   workflows: () => json<WorkflowDef[]>("/api/workflows"),
   workflowUsage: (id: string) => json<WorkflowUsage>(`/api/workflows/${enc(id)}/usage`),
   createWorkflow: (input: CreateWorkflowInput) => post<WorkflowDef>("/api/workflows", input),
   saveWorkflow: (id: string, input: SaveWorkflowInput) =>
     json<WorkflowDef>(`/api/workflows/${enc(id)}`, { method: "PUT", json: input }),
-  deleteWorkflow: async (id: string) => void (await send(`/api/workflows/${enc(id)}`, { method: "DELETE" })),
+  /** `force` also deletes the tasks still using the workflow. */
+  deleteWorkflow: async (id: string, force = false) =>
+    void (await send(`/api/workflows/${enc(id)}${force ? "?force=true" : ""}`, { method: "DELETE" })),
   actionTypes: () => json<ActionTypeInfo[]>("/api/action-types"),
 
   repos: () => json<RepoInfo[]>("/api/repos"),
@@ -76,12 +101,15 @@ export const api = {
     json<TaskDetail>(`/api/tasks/${enc(id)}`, { method: "PATCH", json: patch }),
   moveTask: (id: string, stageId: string, runActions: boolean) =>
     post<TaskDetail>(`/api/tasks/${enc(id)}/move`, { stageId, runActions }),
-  completePhase: (id: string, phaseStateId: string) =>
-    post<TaskDetail>(`/api/tasks/${enc(id)}/phases/${enc(phaseStateId)}/complete`),
-  completeStage: (id: string) => post<TaskDetail>(`/api/tasks/${enc(id)}/stage/complete`),
-  triggerAction: (id: string, bindingId: string, feedback?: string) =>
-    post<TaskDetail>(`/api/tasks/${enc(id)}/bindings/${enc(bindingId)}/trigger`, feedback === undefined ? {} : { feedback }),
+  /** Runs the current stage's actions when the task was moved in without running them. */
+  startActions: (id: string) => post<TaskDetail>(`/api/tasks/${enc(id)}/start`),
   archiveTask: (id: string, force = false) => post<TaskDetail>(`/api/tasks/${enc(id)}/archive`, { force }),
+
+  answerQuestion: (questionId: string, input: AnswerQuestionInput) =>
+    post<TaskDetail>(`/api/questions/${enc(questionId)}/answer`, input),
+
+  /** What the task's branch changed, including work the agent has not committed. */
+  taskDiff: (id: string) => json<TaskDiff>(`/api/tasks/${enc(id)}/diff`),
 
   artifacts: (id: string) => json<ArtifactInfo[]>(`/api/tasks/${enc(id)}/artifacts`),
   artifact: async (id: string, name: string) => (await send(`/api/tasks/${enc(id)}/artifact?name=${enc(name)}`)).text(),
@@ -89,7 +117,10 @@ export const api = {
   agents: () => json<AgentStatus[]>("/api/agents"),
   agentModels: () => json<AgentModelList[]>("/api/agent-models"),
   setAgentPath: (id: AgentId, path: string | null) => json<AgentStatus>(`/api/agents/${id}`, { method: "PUT", json: { path } }),
-  testAgent: (id: AgentId, model?: string) => post<AgentTestResult>(`/api/agents/${id}/test`, model ? { model } : {}),
+  setAgentDefaults: (id: AgentId, defaults: { model: string | null; effort: string | null }) =>
+    json<AgentStatus>(`/api/agents/${id}/defaults`, { method: "PUT", json: defaults }),
+  /** Runs with the agent's saved default model and effort. */
+  testAgent: (id: AgentId) => post<AgentTestResult>(`/api/agents/${id}/test`, {}),
 
   connectionTypes: () => json<ConnectionTypeInfo[]>("/api/connection-types"),
   connections: () => json<ConnectionInfo[]>("/api/connections"),
@@ -99,8 +130,26 @@ export const api = {
   deleteConnection: async (id: string) => void (await send(`/api/connections/${enc(id)}`, { method: "DELETE" })),
   testConnection: (id: string) => post<ConnectionTestResult>(`/api/connections/${enc(id)}/test`),
 
+  /** Reads the ticket and drafts a title and description; can take a while when an agent writes it. */
+  draftFromTicket: (link: TaskLink) => post<TicketDraft>("/api/tickets/draft", { link }),
+  ticketDraftSettings: () => json<TicketDraftSettings>("/api/settings/ticket-draft"),
+  saveTicketDraftSettings: (settings: TicketDraftSettings) =>
+    json<TicketDraftSettings>("/api/settings/ticket-draft", { method: "PUT", json: settings }),
+
   runLog: (runId: number) => json<RunLogLine[]>(`/api/runs/${runId}/log`),
   retryRun: (runId: number, overrides?: Record<string, unknown>) =>
     post<TaskDetail>(`/api/runs/${runId}/retry`, overrides ? { overrides } : {}),
   cancelRun: (runId: number) => post<TaskDetail>(`/api/runs/${runId}/cancel`),
+  /** Carry on past a failed or cancelled action. */
+  skipRun: (runId: number) => post<TaskDetail>(`/api/runs/${runId}/skip`),
+  approveRun: (runId: number) => post<TaskDetail>(`/api/runs/${runId}/approve`),
+  /** Sends an agent waiting for approval back to work, in the session it just used. */
+  requestChanges: (runId: number, note: string) => post<TaskDetail>(`/api/runs/${runId}/request-changes`, { note }),
+  sendBackRun: (runId: number, note?: string) =>
+    post<TaskDetail>(`/api/runs/${runId}/send-back`, note === undefined ? {} : { note }),
+  /** Try a run waiting for a usage limit now rather than at the reset time. */
+  resumeRun: (runId: number) => post<TaskDetail>(`/api/runs/${runId}/resume`),
 };
+}
+
+export type WorkspaceApi = ReturnType<typeof createWorkspaceApi>;

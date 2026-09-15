@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import type { RunLogLine, ServerEvent } from "@wm/shared";
 import { useEffect, useState } from "react";
+import { useApi } from "./api-context";
 
 const RETRY_DELAY_MS = 2000;
 /** The server pings every 15s; a stream silent for longer than this is treated as dead. */
@@ -11,6 +12,7 @@ const STALE_AFTER_MS = 40_000;
  * log lines are appended straight into any cached run log.
  */
 export function useLiveUpdates(): boolean {
+  const api = useApi();
   const queryClient = useQueryClient();
   const [connected, setConnected] = useState(false);
 
@@ -52,7 +54,7 @@ export function useLiveUpdates(): boolean {
     };
 
     const connect = () => {
-      const es = new EventSource("/api/events");
+      const es = new EventSource(api.eventsUrl);
       source = es;
       const on = <T extends ServerEvent["type"]>(type: T, handle: (event: Extract<ServerEvent, { type: T }>) => void) =>
         es.addEventListener(type, (message) => {
@@ -103,7 +105,7 @@ export function useLiveUpdates(): boolean {
       clearTimeout(retryTimer);
       clearTimeout(watchdog);
     };
-  }, [queryClient]);
+  }, [queryClient, api]);
 
   return connected;
 }
