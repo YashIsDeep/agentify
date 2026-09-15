@@ -1,0 +1,1 @@
+ALTER TABLE `action_runs` ADD `question` text;

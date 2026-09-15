@@ -1,0 +1,1 @@
+ALTER TABLE `workflows` ADD `icon` text DEFAULT '' NOT NULL;

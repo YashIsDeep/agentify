@@ -1,0 +1,1 @@
+ALTER TABLE `tasks` ADD `use_worktree` integer DEFAULT true NOT NULL;

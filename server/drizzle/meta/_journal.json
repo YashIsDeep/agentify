@@ -15,6 +15,62 @@
       "when": 1789036600761,
       "tag": "0001_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789070671113,
+      "tag": "0002_pale_serpent_society",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789101897674,
+      "tag": "0003_odd_warhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789117513755,
+      "tag": "0004_tidy_taskmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789137711240,
+      "tag": "0005_task_use_worktree",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789141859496,
+      "tag": "0006_quota_wait",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1789149791100,
+      "tag": "0007_ordered_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789294836961,
+      "tag": "0008_workflow_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1789302652569,
+      "tag": "0009_agent_approval",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { type BetterSQLite3Database, drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { flattenPhases } from "./flatten-phases";
 import * as schema from "./schema";
 
 export type Db = BetterSQLite3Database<typeof schema>;
@@ -15,6 +16,8 @@ export function openDb(file: string): { db: Db; sqlite: Sqlite } {
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
   const db = drizzle({ client: sqlite, schema });
+  // Before migrating: 0007 drops the phase tables this converts from.
+  flattenPhases(sqlite);
   migrate(db, { migrationsFolder: MIGRATIONS_DIR });
   return { db, sqlite };
 }
