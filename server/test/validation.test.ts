@@ -21,7 +21,7 @@ const registry = createDefaultRegistry();
 const parse = (type: string, config: Record<string, unknown>) => registry.get(type)!.configSchema.safeParse(config);
 
 /** These used to parse happily and blow up only once the action ran. */
-describe("config that is now rejected when the template is saved", () => {
+describe("config that is now rejected when the workflow is saved", () => {
   it("rejects a shell output regex that does not compile", () => {
     expect(parse("shell", { command: "x", extract: { url: "https?://[" } }).success).toBe(false);
     expect(parse("shell", { command: "x", extract: { url: "(https?://\\S+)" } }).success).toBe(true);
@@ -51,7 +51,7 @@ describe("config that is now rejected when the template is saved", () => {
 });
 
 describe("task links", () => {
-  it("lower-cases the type so template lookups match", () => {
+  it("lower-cases the type so workflow lookups match", () => {
     const [feature] = h.engine.listWorkflows();
     const task = h.engine.createTask({
       workflowId: feature!.id,
@@ -71,13 +71,10 @@ describe("an autonomous agent with nowhere to work", () => {
       stages: [
         {
           name: "Work",
-          phases: [{ name: "Agent", completion: "auto" }],
           bindings: [
             {
               key: "agent",
               label: "Agent",
-              trigger: "phase.started",
-              phase: "Agent",
               actionType: "coding-agent",
               // ensure-worktree treats "no repository" as nothing to do, so this used to reach the CLI.
               config: { agent: "claude", prompt: "Do the thing", autonomy: "autonomous" },

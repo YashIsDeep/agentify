@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
-import { runProcess, tail } from "../lib/process";
+import { runProcess, stripAnsi, tail } from "../lib/process";
 import type { ActionContext, ActionDefinition } from "./types";
 import { extractPatterns } from "./validation";
 
@@ -69,15 +69,17 @@ export const shellAction: ActionDefinition<Config> = {
       env: { ...process.env, ...ctx.env, GIT_TERMINAL_PROMPT: "0" },
       signal: ctx.signal,
       timeoutMs: config.timeoutSec ? config.timeoutSec * 1000 : undefined,
-      onLine: (text, stream) => ctx.log(text, stream),
+      onLine: (text, stream) => ctx.log(stripAnsi(text), stream),
     });
     if (result.aborted) throw new Error("Cancelled");
     if (result.timedOut) throw new Error(`Timed out after ${config.timeoutSec}s`);
+    // Colour codes would otherwise end up in failure messages and in whatever the regexes capture.
+    const output = stripAnsi(result.output);
     if (result.code !== 0) {
-      const output = tail(result.output, 5);
-      throw new Error(`Command exited with code ${result.code}${output ? `\n${output}` : ""}`);
+      const excerpt = tail(output, 5);
+      throw new Error(`Command exited with code ${result.code}${excerpt ? `\n${excerpt}` : ""}`);
     }
-    return { outputs: { ...extractOutputs(config.extract, result.output), ...readOutputFile(ctx.env.WM_OUTPUT_FILE) } };
+    return { outputs: { ...extractOutputs(config.extract, output), ...readOutputFile(ctx.env.WM_OUTPUT_FILE) } };
   },
 };
 
