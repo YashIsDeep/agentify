@@ -17,7 +17,7 @@ export function useLiveUpdates(): boolean {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const dirty = { tasks: false, taskIds: new Set<string>(), runIds: new Set<number>() };
+    const dirty = { tasks: false, workflows: false, taskIds: new Set<string>(), runIds: new Set<number>() };
     let source: EventSource | undefined;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -28,12 +28,18 @@ export function useLiveUpdates(): boolean {
     const flush = () => {
       flushTimer = undefined;
       if (dirty.tasks) void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      if (dirty.workflows) {
+        // The catalogue drives the sidebar's boards and the workflow editor; usage counts follow a deletion.
+        void queryClient.invalidateQueries({ queryKey: ["workflows"] });
+        void queryClient.invalidateQueries({ queryKey: ["workflow-usage"] });
+      }
       for (const taskId of dirty.taskIds) {
         void queryClient.invalidateQueries({ queryKey: ["task", taskId] });
         void queryClient.invalidateQueries({ queryKey: ["artifacts", taskId] });
       }
       for (const runId of dirty.runIds) void queryClient.invalidateQueries({ queryKey: ["runLog", runId] });
       dirty.tasks = false;
+      dirty.workflows = false;
       dirty.taskIds.clear();
       dirty.runIds.clear();
     };
@@ -67,6 +73,10 @@ export function useLiveUpdates(): boolean {
       on("task.changed", ({ taskId }) => {
         dirty.tasks = true;
         dirty.taskIds.add(taskId);
+        schedule();
+      });
+      on("workflow.changed", () => {
+        dirty.workflows = true;
         schedule();
       });
       on("timeline.appended", ({ taskId }) => {

@@ -3599,6 +3599,11 @@ button.counter-stopped[aria-expanded="true"] {
 /* Below this the sidebar can't stand beside the page, so it slides in over it from a toggle that
    floats in the corner the sidebar would have occupied. */
 @media (max-width: 899px) {
+  :root {
+    /* How far a page's own content has to start from the left edge to clear the toggle
+       (12px away from the edge, 34px wide, and a gap of the same 12px after it). */
+    --nav-inset: 58px;
+  }
   .app {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3647,10 +3652,16 @@ button.counter-stopped[aria-expanded="true"] {
     color: var(--text-2);
     cursor: pointer;
   }
-  /* Clear of the floating toggle, which stays put when the sidebar slides out from under it. */
+  /* Clear of the floating toggle, which stays put when the sidebar slides out from under it.
+     Every heading sitting at the top left of a page needs the same room. */
   .board-heading,
   .page-view > .page-header {
-    padding-left: 58px;
+    padding-left: var(--nav-inset);
+  }
+  /* The archive scrolls as one block with 28px of padding of its own, so its heading only has to
+     make up the rest of the distance. */
+  .archive-view > .archive-header {
+    padding-left: calc(var(--nav-inset) - 28px);
   }
   .sidebar-open .sidebar-brand {
     padding-left: 40px;
@@ -3660,7 +3671,7 @@ button.counter-stopped[aria-expanded="true"] {
   .board-heading {
     align-items: flex-start;
     gap: 16px;
-    padding: 22px 18px 6px 58px;
+    padding: 22px 18px 6px var(--nav-inset);
   }
   .board-heading h1 {
     font-size: 21px;
@@ -3705,6 +3716,10 @@ button.counter-stopped[aria-expanded="true"] {
   }
   .drawer-open .board {
     padding-right: 18px;
+  }
+  /* The drawer now covers the page, toggle included, so its own header makes room for it. */
+  .drawer-header {
+    padding-left: var(--nav-inset);
   }
   .field-row {
     flex-direction: column;

@@ -60,7 +60,7 @@ export class WorkflowService {
 
   create(raw: CreateWorkflowInput): WorkflowDef {
     const input = createWorkflowSchema.parse(raw);
-    return this.sqlite.transaction(() => {
+    const created = this.sqlite.transaction(() => {
       const id = randomUUID();
       const now = Date.now();
       this.db
@@ -74,6 +74,9 @@ export class WorkflowService {
       this.write(id, stages);
       return this.engine.getWorkflow(id);
     })();
+    // Published outside the transaction so other tabs only hear about a workflow that is committed.
+    this.engine.publish({ type: "workflow.changed", workflowId: created.id });
+    return created;
   }
 
   /**
@@ -86,7 +89,7 @@ export class WorkflowService {
     const stages = this.validate(input.stages);
     await this.validateAgentModels(stages);
 
-    return this.sqlite.transaction(() => {
+    const saved = this.sqlite.transaction(() => {
       const current = this.engine.getWorkflow(id); // 404s if it's gone
       if (input.updatedAt !== undefined && input.updatedAt !== current.updatedAt) {
         throw new EngineError("This workflow changed in another window. Reload before saving.", 409);
@@ -103,6 +106,8 @@ export class WorkflowService {
       this.write(id, stages, current);
       return this.engine.getWorkflow(id);
     })();
+    this.engine.publish({ type: "workflow.changed", workflowId: id });
+    return saved;
   }
 
   /**
@@ -129,6 +134,7 @@ export class WorkflowService {
       this.db.delete(s.workflows).where(eq(s.workflows.id, id)).run(); // cascades to stages/phases/bindings
       return taskIds;
     })();
+    this.engine.publish({ type: "workflow.changed", workflowId: id });
     await Promise.all(deleted.map((taskId) => purgeTaskDir(this.paths, taskId)));
   }
 

@@ -665,6 +665,8 @@ export interface TaskDiff {
 
 export type ServerEvent =
   | { type: "task.changed"; taskId: string }
+  /** The workflow catalogue changed: one was created, saved or deleted. */
+  | { type: "workflow.changed"; workflowId: string }
   | { type: "run.changed"; taskId: string; runId: number }
   | { type: "timeline.appended"; taskId: string; eventId: number }
   | { type: "run.log"; taskId: string; runId: number; line: RunLogLine };

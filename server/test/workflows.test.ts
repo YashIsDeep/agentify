@@ -294,6 +294,29 @@ describe("creating and deleting workflows", () => {
     expect(h.engine.listWorkflows().map((workflow) => workflow.name)).toContain("Chores");
   });
 
+  it("announces every catalogue change, so other open windows can refresh", async () => {
+    const seen: string[] = [];
+    const off = h.engine.on((event) => {
+      if (event.type === "workflow.changed") seen.push(event.workflowId);
+    });
+
+    const chores = h.workflows.create({ name: "Chores" });
+    expect(seen).toEqual([chores.id]);
+
+    await save(chores, (input) => {
+      input.name = "Errands";
+    });
+    expect(seen).toEqual([chores.id, chores.id]);
+
+    await h.workflows.remove(chores.id);
+    expect(seen).toEqual([chores.id, chores.id, chores.id]);
+
+    // A refused edit leaves the catalogue as it was, so it says nothing.
+    await expect(save(feature(), (input) => (input.name = ""))).rejects.toThrow();
+    expect(seen).toHaveLength(3);
+    off();
+  });
+
   it("keeps a workflow's icon, and defaults it to none", async () => {
     const created = h.workflows.create({ name: "Chores", icon: "🧹" });
     expect(created.icon).toBe("🧹");

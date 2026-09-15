@@ -57,7 +57,13 @@ export interface AppDeps {
   webDist?: string;
 }
 
-const SERVER_EVENT_TYPES = new Set<InternalEvent["type"]>(["task.changed", "run.changed", "timeline.appended", "run.log"]);
+const SERVER_EVENT_TYPES = new Set<InternalEvent["type"]>([
+  "task.changed",
+  "workflow.changed",
+  "run.changed",
+  "timeline.appended",
+  "run.log",
+]);
 const runIdSchema = z.coerce.number().int().positive();
 const agentIdSchema = z.enum(AGENT_IDS);
 
