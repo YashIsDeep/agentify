@@ -6,8 +6,20 @@
     <meta name="color-scheme" content="light dark" />
     <link
       rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f5bd5'/><rect x='7' y='8' width='5' height='16' rx='2' fill='white'/><rect x='14' y='8' width='5' height='11' rx='2' fill='white' opacity='.8'/><rect x='21' y='8' width='5' height='7' rx='2' fill='white' opacity='.6'/></svg>"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%236366f1'/><stop offset='1' stop-color='%237c5cf5'/></linearGradient></defs><rect width='32' height='32' rx='9' fill='url(%23g)'/><rect x='7' y='8' width='5' height='16' rx='2' fill='white'/><rect x='14' y='8' width='5' height='11' rx='2' fill='white' opacity='.8'/><rect x='21' y='8' width='5' height='7' rx='2' fill='white' opacity='.6'/></svg>"
     />
+    <script>
+      // Paint the theme before the app loads, so the chosen theme never flashes the other one. Same
+      // rule as lib/theme.ts: the stored choice wins, and the OS only seeds a first visit.
+      var stored = null;
+      try {
+        stored = localStorage.getItem("wm.theme");
+      } catch (error) {
+        // Blocked storage only costs the app the memory of the choice, not the system theme.
+      }
+      var dark = stored === "dark" || (stored !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    </script>
     <title>Workflow Manager</title>
   </head>
   <body>
