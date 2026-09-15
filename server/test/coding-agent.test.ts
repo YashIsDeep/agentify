@@ -41,13 +41,10 @@ function agentWorkflow(config: Record<string, unknown>) {
     stages: [
       {
         name: "Work",
-        phases: [{ name: "Agent", completion: "auto" }],
         bindings: [
           {
             key: "agent",
             label: "Agent",
-            trigger: "phase.started",
-            phase: "Agent",
             actionType: "coding-agent",
             config: { agent: "codex", prompt: "Implement {{task.title}}", saveResultAs: "result.md", ...config },
           },
@@ -61,15 +58,16 @@ function agentWorkflow(config: Record<string, unknown>) {
 async function reenter(taskId: string, workflowId: string, attempt: number) {
   h.engine.moveTask(taskId, h.stageId(workflowId, "Done"));
   h.engine.moveTask(taskId, h.stageId(workflowId, "Work"));
-  await waitFor(() => q.currentVisit(taskId).attempt === attempt && q.phase(taskId, "Agent").status === "done");
+  await waitFor(() => q.currentVisit(taskId).attempt === attempt && q.visitDone(taskId));
 }
 
 describe("coding-agent action", () => {
   it("runs the agent, saves its final message, and records session and usage", async () => {
     const workflowId = agentWorkflow({ autonomy: "autonomous" });
-    // An autonomous agent needs somewhere real to work; without a repo the action refuses to run.
-    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir });
-    await waitFor(() => q.phase(task.id, "Agent").status === "done");
+    // An autonomous agent needs somewhere real to work; without a repo the action refuses to run, and
+    // with one it refuses the repository's checkout unless the task says worktrees are off.
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    await waitFor(() => q.visitDone(task.id));
 
     const result = artifact(task.id, "result.md") ?? "";
     expect(result).toContain("codex fresh | model:default | access:autonomous | keys:none");
@@ -80,14 +78,59 @@ describe("coding-agent action", () => {
     expect(run?.outputs).toMatchObject({ agent: "codex", model: null, sessionId: "codex-thread-1", artifact: "result.md" });
     expect(run?.usage).toMatchObject({ inputTokens: 1200, outputTokens: 80, estimated: true });
 
+    // The transcript keeps its shape, so the chat view can pair a call with the result that answers it.
     const log = (await (await h.app.request(`/api/runs/${run!.id}/log`)).json()) as RunLogLine[];
-    expect(log.map((line) => line.text)).toContain("▸ shell: git status");
+    // The rendered prompt opens the transcript, so a bad template can be told from a bad agent.
+    expect(log[0]).toMatchObject({ kind: "prompt", text: "Implement Widget" });
+    expect(log).toContainEqual(expect.objectContaining({ kind: "tool", tool: "shell", text: "git status" }));
+    expect(log).toContainEqual(expect.objectContaining({ kind: "tool-result", tool: "shell", ok: true }));
+    expect(log.filter((line) => line.kind === "message").map((line) => line.text)).not.toEqual([]);
+  });
+
+  it("records a huge prompt only as far as it is worth keeping, and says it stopped there", async () => {
+    const workflowId = agentWorkflow({ prompt: "x".repeat(25_000) });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+
+    const [run] = q.runs(task.id, "agent");
+    const log = (await (await h.app.request(`/api/runs/${run!.id}/log`)).json()) as RunLogLine[];
+    expect(log[0]?.kind).toBe("prompt");
+    expect(log[0]?.text).toMatch(/^x{20000}\n\n\[Truncated: the prompt was 25000 characters and only the first 20000 are kept here\.\]$/);
+  });
+
+  it("refuses to turn an autonomous agent loose on the repository's checkout when the task wants a worktree", async () => {
+    // Nothing above the agent ensures a worktree, so the run would land in the checkout itself while
+    // the task's Details still say to use one.
+    const workflowId = agentWorkflow({ autonomy: "autonomous" });
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir });
+    await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
+    expect(q.latest(task.id, "agent")?.error).toContain("Add an “Ensure worktree” action to an earlier stage");
+    // It never got as far as the agent, so nothing ran and nothing was written.
+    expect(artifact(task.id, "result.md")).toBeUndefined();
+  });
+
+  it("notes a read-only run that works in the repository's checkout, and keeps quiet when that was the plan", async () => {
+    const logOf = async (taskId: string) => {
+      const run = q.latest(taskId, "agent")!;
+      expect(run.status).toBe("succeeded");
+      const lines = (await (await h.app.request(`/api/runs/${run.id}/log`)).json()) as RunLogLine[];
+      return lines.map((line) => line.text).join("\n");
+    };
+    const workflowId = agentWorkflow({});
+    const stray = h.engine.createTask({ workflowId, title: "Stray", repoPath: h.dataDir });
+    await waitFor(() => q.visitDone(stray.id));
+    // Harmless — it only reads — but the transcript says why it is there rather than in a worktree.
+    expect(await logOf(stray.id)).toContain("no “Ensure worktree” action has run above this one");
+
+    const deliberate = h.engine.createTask({ workflowId, title: "Deliberate", repoPath: h.dataDir, useWorktree: false });
+    await waitFor(() => q.visitDone(deliberate.id));
+    expect(await logOf(deliberate.id)).not.toContain("Ensure worktree");
   });
 
   it("continues the previous session, and hands over context when the agent changes", async () => {
     const workflowId = agentWorkflow({ autonomy: "autonomous", continueSession: true });
-    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir });
-    await waitFor(() => q.phase(task.id, "Agent").status === "done");
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    await waitFor(() => q.visitDone(task.id));
 
     await reenter(task.id, workflowId, 2);
     expect(artifact(task.id, "result.md")).toContain("codex resumed codex-thread-1");
@@ -102,16 +145,61 @@ describe("coding-agent action", () => {
   it("keeps the session of a failed run and lets Retry switch agent and model", async () => {
     const workflowId = agentWorkflow({ prompt: "FAIL please" });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
-    await waitFor(() => q.phase(task.id, "Agent").status === "failed");
+    await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
 
     const [failed] = q.runs(task.id, "agent");
     expect(failed?.error).toContain("model exploded");
     expect(failed?.sessionId).toBe("codex-thread-1");
 
     h.engine.retryRun(failed!.id, { agent: "claude", model: "sonnet" });
-    await waitFor(() => q.phase(task.id, "Agent").status === "done");
+    await waitFor(() => q.visitDone(task.id));
     expect(artifact(task.id, "result.md")).toContain("claude fresh | model:sonnet | access:read-only");
     expect(q.runs(task.id, "agent").at(-1)?.usage).toMatchObject({ inputTokens: 1010, costUsd: 0.0123 });
+  });
+
+  it("runs with the agent's saved default model and effort, which task choices override", async () => {
+    await h.agents.setDefaults("codex", { model: "gpt-5.5", effort: "high" });
+    const workflowId = agentWorkflow({});
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+    expect(artifact(task.id, "result.md")).toContain("model:gpt-5.5 | access:read-only | keys:none | effort:high");
+    expect(q.runs(task.id, "agent")[0]?.outputs).toMatchObject({ model: "gpt-5.5", effort: "high" });
+
+    // An effort chosen above the default model still pairs with it...
+    h.engine.updateTask(task.id, { effortOverride: "low" });
+    await reenter(task.id, workflowId, 2);
+    expect(artifact(task.id, "result.md")).toContain("model:gpt-5.5 | access:read-only | keys:none | effort:low");
+
+    // ...but a model chosen above it doesn't inherit the default's effort, which was meant for another model.
+    h.engine.updateTask(task.id, { modelOverride: "gpt-6-astra", effortOverride: null });
+    await reenter(task.id, workflowId, 3);
+    expect(artifact(task.id, "result.md")).toContain("model:gpt-6-astra | access:read-only | keys:none | effort:default");
+  });
+
+  it("fills a blank agent, model and effort from the stage's defaults, which an action naming another agent skips", async () => {
+    const coding = (key: string, agent: string) => ({
+      key,
+      label: key,
+      actionType: "coding-agent",
+      config: { agent, prompt: "Go", saveResultAs: `${key}.md` },
+    });
+    const workflowId = h.addWorkflow({
+      name: "Staged",
+      description: "",
+      stages: [
+        {
+          name: "Work",
+          agentDefaults: { agent: "claude", model: "sonnet", effort: "high" },
+          bindings: [coding("staged", ""), coding("codex", "codex")],
+        },
+        { name: "Done" },
+      ],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+    expect(artifact(task.id, "staged.md")).toContain("claude fresh | model:sonnet | access:read-only | keys:none | effort:high");
+    // The stage's Claude model means nothing to Codex.
+    expect(artifact(task.id, "codex.md")).toContain("codex fresh | model:default | access:read-only | keys:none | effort:default");
   });
 
   it("stops an agent that goes quiet", async () => {
@@ -123,7 +211,7 @@ describe("coding-agent action", () => {
 
   it("reports status and tests agents over the API", async () => {
     const statuses = (await (await h.app.request("/api/agents")).json()) as AgentStatus[];
-    expect(statuses.map((status) => status.id)).toEqual(["claude", "codex", "opencode"]);
+    expect(statuses.map((status) => status.id)).toEqual(["claude", "codex", "opencode", "cursor"]);
     expect(statuses.find((status) => status.id === "codex")).toMatchObject({
       installed: true,
       path: FAKE_CODEX,
@@ -143,5 +231,108 @@ describe("coding-agent action", () => {
     expect((await put("C:/definitely/not/here.exe")).status).toBe(400);
     expect(((await (await put(null)).json()) as AgentStatus).pathOverride).toBeNull();
     expect((await h.app.request("/api/agents/gemini/test", { method: "POST" })).status).toBe(400);
+  });
+
+  it("keeps repeated revisions in one session and blocks later actions until explicit approval", async () => {
+    const workflowId = h.addWorkflow({
+      name: "Review loop", description: "",
+      stages: [{ name: "Work", bindings: [
+        { key: "agent", label: "Agent", actionType: "coding-agent", config: {
+          agent: "codex", prompt: "Implement {{task.title}}", saveResultAs: "result.md",
+          requireApproval: true, approvalInstructions: "Check {{task.title}}",
+        } },
+        { key: "afterApproval", label: "Continue workflow", actionType: "write-artifact", config: { name: "approved.md", content: "Approved" } },
+      ] }],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+
+    const waiting = await waitFor(() =>
+      q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined,
+    );
+    expect(waiting.outputs?.instructions).toBe("Check Widget");
+    expect(artifact(task.id, "result.md")).toContain("codex fresh");
+    expect(q.detail(task.id).task).toMatchObject({ badge: "needs-you", badgeDetail: { label: "Agent", reason: "approval" } });
+    // Nothing below it has moved: the stage is still on this action.
+    expect(q.visitDone(task.id)).toBe(false);
+    expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
+    const post = (path: string, body?: unknown) => h.app.request(path, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    expect((await post(`/api/runs/${waiting.id}/request-changes`, { note: "   " })).status).toBe(400);
+
+    // Changes go to the agent, in the session it just used, on the same run.
+    expect((await post(`/api/runs/${waiting.id}/request-changes`, { note: "Use fewer words" })).status).toBe(200);
+    // Double submission and approval while the revision is in flight are rejected.
+    expect((await post(`/api/runs/${waiting.id}/request-changes`, { note: "Duplicate" })).status).toBe(409);
+    expect((await post(`/api/runs/${waiting.id}/approve`)).status).toBe(409);
+    const revised = await waitFor(() => {
+      const text = artifact(task.id, "result.md");
+      return text?.includes("resumed") ? text : undefined;
+    });
+    expect(revised).toContain("codex resumed codex-thread-1");
+    expect(revised).toContain("prompt:Use fewer words");
+    expect(q.detail(task.id).task.lastFeedback).toBe("Use fewer words");
+    expect(q.runs(task.id, "agent")).toHaveLength(1);
+
+    const again = await waitFor(() =>
+      q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined,
+    );
+    // Your words read as your turn in the chat, so the revision is one conversation.
+    const log = (await (await h.app.request(`/api/runs/${again.id}/log`)).json()) as RunLogLine[];
+    expect(log).toContainEqual(expect.objectContaining({ kind: "answer", text: "Use fewer words" }));
+    // A revision sends your words and nothing else, and that is what the transcript records.
+    expect(log.filter((line) => line.kind === "prompt").map((line) => line.text)).toEqual(["Implement Widget", "Use fewer words"]);
+
+    expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
+    expect((await post(`/api/runs/${again.id}/request-changes`, { note: "Now add a concrete example" })).status).toBe(200);
+    await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
+    expect(artifact(task.id, "result.md")).toContain("codex resumed codex-thread-1");
+    expect(artifact(task.id, "result.md")).toContain("prompt:Now add a concrete example");
+    expect(q.runs(task.id, "agent")).toHaveLength(1);
+    expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
+    expect(artifact(task.id, "approved.md")).toBeUndefined();
+    const fullLog = (await (await h.app.request(`/api/runs/${again.id}/log`)).json()) as RunLogLine[];
+    expect(fullLog.filter((line) => line.kind === "answer").map((line) => line.text)).toEqual([
+      "Use fewer words", "Now add a concrete example",
+    ]);
+    expect(q.detail(task.id).timeline.filter((event) => event.type === "run.changes-requested")).toHaveLength(2);
+
+    expect((await post(`/api/runs/${again.id}/approve`)).status).toBe(200);
+    await waitFor(() => q.visitDone(task.id));
+    expect(q.latest(task.id, "agent")?.outputs).toMatchObject({ decision: "approved" });
+    expect(artifact(task.id, "approved.md")).toBe("Approved");
+    expect((await post(`/api/runs/${again.id}/approve`)).status).toBe(409);
+    expect((await post(`/api/runs/${again.id}/request-changes`, { note: "Too late" })).status).toBe(409);
+  });
+
+  it("only offers Request changes where there is an agent to send them to", async () => {
+    const workflowId = agentWorkflow({});
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+    // Succeeded, not held open: the action was never asked to wait.
+    expect(() => h.engine.requestChanges(q.latest(task.id, "agent")!.id, "more")).toThrow(/not waiting for approval/);
+  });
+
+  it("saves agent defaults over the API, and rejects effort levels the agent doesn't offer", async () => {
+    const json = { "content-type": "application/json" };
+    const defaults = (body: object) => h.app.request("/api/agents/claude/defaults", { method: "PUT", headers: json, body: JSON.stringify(body) });
+    expect((await defaults({ model: "opus", effort: "turbo" })).status).toBe(400);
+    expect(await (await defaults({ model: "opus", effort: "max" })).json()).toMatchObject({ defaultModel: "opus", defaultEffort: "max" });
+
+    // A test with nothing chosen uses the saved default.
+    const test = await h.app.request("/api/agents/claude/test", { method: "POST", headers: json, body: "{}" });
+    expect(((await test.json()) as AgentTestResult).text).toContain("model:opus | access:read-only | keys:none | effort:max");
+
+    const workflowId = agentWorkflow({ agent: "claude" });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    const patch = (body: object) => h.app.request(`/api/tasks/${task.id}`, { method: "PATCH", headers: json, body: JSON.stringify(body) });
+    expect((await patch({ agentOverride: "claude", effortOverride: "turbo" })).status).toBe(400);
+    expect((await patch({ agentOverride: "claude", effortOverride: "low" })).status).toBe(200);
+    const retry = await h.app.request(`/api/runs/${q.runs(task.id, "agent")[0]!.id}/retry`, {
+      method: "POST",
+      headers: json,
+      body: JSON.stringify({ overrides: { agent: "claude", model: "", effort: "turbo" } }),
+    });
+    expect(retry.status).toBe(400);
   });
 });
