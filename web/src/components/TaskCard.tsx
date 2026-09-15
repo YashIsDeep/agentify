@@ -1,6 +1,8 @@
 import type { TaskSummary } from "@wm/shared";
 import { GitBranch, Link2 } from "lucide-react";
 import { age, cls } from "../lib/format";
+import { linkTypeLabel } from "../lib/links";
+import { BrandIcon, hasBrandIcon } from "./BrandIcon";
 import { StatusBadge } from "./StatusBadge";
 
 export function TaskCardView({
@@ -14,11 +16,11 @@ export function TaskCardView({
   selected?: boolean;
   overlay?: boolean;
 }) {
-  const { done, total } = task.phaseProgress;
+  const { done, total } = task.actionProgress;
   return (
     <div className={cls("card", `card-${task.badge}`, selected && "card-selected", overlay && "card-overlay")}>
       <div className="card-top">
-        <StatusBadge badge={task.badge} />
+        <StatusBadge badge={task.badge} detail={task.badgeDetail} />
         {task.enteredStageAt && (
           <span className="card-age" title="Time in this stage">
             {age(task.enteredStageAt, now)}
@@ -27,11 +29,15 @@ export function TaskCardView({
       </div>
       <div className="card-title">{task.title}</div>
       {total > 0 && (
-        <div className="phase-dots" title={`${done} of ${total} phases done`}>
+        <div className="progress-dots" title={`${done} of ${total} actions done`}>
           {Array.from({ length: total }, (_, index) => (
             <span
               key={index}
-              className={cls("phase-dot", index < done && "phase-dot-done", index === done && `phase-dot-current phase-dot-${task.badge}`)}
+              className={cls(
+                "progress-dot",
+                index < done && "progress-dot-done",
+                index === done && `progress-dot-current progress-dot-${task.badge}`,
+              )}
             />
           ))}
         </div>
@@ -46,8 +52,8 @@ export function TaskCardView({
           )}
           {task.links.map((link) => (
             <span key={`${link.type}:${link.value}`} className="chip" title={link.value}>
-              <Link2 size={11} />
-              {link.type}
+              {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
+              {linkTypeLabel(link.type)}
             </span>
           ))}
           {task.tags.map((tag) => (
