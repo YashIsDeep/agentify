@@ -19,7 +19,7 @@ const resumed = flag("--resume");
 const sessionId = resumed ?? "claude-session-1";
 const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].filter((key) => process.env[key]).join(",") || "none";
 const access = args.includes("--dangerously-skip-permissions") ? "autonomous" : "read-only";
-const text = `claude ${resumed ? `resumed ${sessionId}` : "fresh"} | model:${flag("--model") ?? "default"} | access:${access} | keys:${keys} | prompt:${prompt}`;
+const text = `claude ${resumed ? `resumed ${sessionId}` : "fresh"} | model:${flag("--model") ?? "default"} | access:${access} | keys:${keys} | effort:${flag("--effort") ?? "default"} | prompt:${prompt}`;
 
 emit({ type: "system", subtype: "init", session_id: sessionId });
 emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "README.md" } }] } });

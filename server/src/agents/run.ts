@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import type { AgentUsage } from "@wm/shared";
 import { runProcess, tail } from "../lib/process";
+import { detectUsageLimit, type UsageLimit } from "./limits";
 import type { AgentAdapter, AgentEvent, AgentInvocation, ResolvedCli } from "./types";
 
 /** Removed from the agent's environment so the CLIs use their subscription logins, not API billing. */
@@ -22,6 +23,8 @@ export interface AgentRunOptions {
   signal?: AbortSignal;
   inactivityTimeoutMs: number;
   timeoutMs?: number;
+  /** True while the agent is legitimately silent, waiting on an answer from the user. */
+  isIdleExpected?: () => boolean;
   onEvent?: (event: AgentEvent) => void;
   onStderr?: (line: string) => void;
 }
@@ -34,6 +37,8 @@ export interface AgentRunResult {
   sessionId: string | null;
   usage: AgentUsage | null;
   error: string | null;
+  /** Set when the run failed because the subscription's usage limit refused it. */
+  usageLimit: UsageLimit | null;
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -47,9 +52,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let final: Extract<AgentEvent, { kind: "final" }> | null = null;
   let lastError: string | null = null;
   let lastMessage = "";
+  let limit: UsageLimit | null = null;
 
   const handle = (event: AgentEvent) => {
     if (event.kind === "session") sessionId = event.sessionId;
+    else if (event.kind === "limit") limit = { resetAt: event.resetAt ?? limit?.resetAt ?? null };
     else if (event.kind === "usage") usage = { ...event.usage, estimated: adapter.usageEstimated };
     else if (event.kind === "final") final = event;
     else if (event.kind === "error") lastError = event.message;
@@ -66,6 +73,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     signal: options.signal,
     timeoutMs: options.timeoutMs,
     inactivityTimeoutMs: options.inactivityTimeoutMs,
+    isIdleExpected: options.isIdleExpected,
     onLine: (line, stream) => {
       if (stream === "stdout") for (const event of parser.push(line)) handle(event);
       else if (line.trim()) options.onStderr?.(line);
@@ -78,7 +86,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   const finalEvent = final as Extract<AgentEvent, { kind: "final" }> | null;
   const text = finalEvent?.text || readResultFile(spec.resultFile) || lastMessage;
   const base = { text, sessionId, usage };
-  if (result.aborted) return { ...base, ok: false, aborted: true, error: "Cancelled" };
+  if (result.aborted) return { ...base, ok: false, aborted: true, error: "Cancelled", usageLimit: null };
 
   let error: string | null = null;
   if (result.inactive) {
@@ -92,7 +100,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   } else if (!finalEvent && lastError) {
     error = lastError;
   }
-  return { ...base, ok: error === null, aborted: false, error };
+
+  // A usage limit is no fault of the work, so the caller can wait for the reset instead of failing.
+  let usageLimit: UsageLimit | null = null;
+  if (error !== null && adapter.reportsUsageLimits && !result.inactive && !result.timedOut) {
+    const reported = limit as UsageLimit | null;
+    const detected = detectUsageLimit([error, (lastError as string | null) ?? "", tail(result.stderr, 5)].join("\n"));
+    if (reported || detected) usageLimit = { resetAt: reported?.resetAt ?? detected?.resetAt ?? null };
+  }
+  return { ...base, ok: error === null, aborted: false, error, usageLimit };
 }
 
 function readResultFile(file: string | undefined): string {

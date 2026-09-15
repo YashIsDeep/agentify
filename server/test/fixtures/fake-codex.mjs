@@ -1,4 +1,4 @@
-// Minimal stand-in for `codex exec --json`, driven by keywords in the prompt (FAIL, HANG).
+// Minimal stand-in for `codex exec --json`, driven by keywords in the prompt (FAIL, HANG, LIMIT).
 import { writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
@@ -28,6 +28,15 @@ const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].filter((key) => process.env
 
 emit({ type: "thread.started", thread_id: sessionId });
 emit({ type: "turn.started" });
+
+if (prompt.includes("LIMIT")) {
+  // Worded as Codex 0.154 words it.
+  const message =
+    "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 6th, 2099 2:40 AM.";
+  emit({ type: "error", message });
+  emit({ type: "turn.failed", error: { message } });
+  process.exit(1);
+}
 emit({ type: "item.started", item: { id: "item_1", type: "command_execution", command: "git status", exit_code: null } });
 emit({ type: "item.completed", item: { id: "item_1", type: "command_execution", command: "git status", exit_code: 0 } });
 
@@ -37,7 +46,15 @@ if (prompt.includes("FAIL")) {
 }
 
 const access = args.includes("--dangerously-bypass-approvals-and-sandbox") ? "autonomous" : "read-only";
-const text = `codex ${resume ? `resumed ${sessionId}` : "fresh"} | model:${flag("-m") ?? "default"} | access:${access} | keys:${keys} | prompt:${prompt}`;
+const effort = args.find((arg) => arg.startsWith("model_reasoning_effort="))?.split("=")[1]?.replaceAll('"', "") ?? "default";
+// A ticket-drafting prompt gets the JSON it asks for, echoing what it was given.
+const ticket = prompt.includes("<ticket>") ? prompt.slice(prompt.indexOf("<ticket>") + 8, prompt.indexOf("</ticket>")).trim() : null;
+const text = ticket
+  ? JSON.stringify({
+      title: `Drafted: ${ticket.match(/^Summary: (.*)$/m)?.[1] ?? ""}`,
+      description: `model:${flag("-m") ?? "default"} | access:${access} | effort:${effort}\n\n${ticket}`,
+    })
+  : `codex ${resume ? `resumed ${sessionId}` : "fresh"} | model:${flag("-m") ?? "default"} | access:${access} | keys:${keys} | effort:${effort} | prompt:${prompt}`;
 emit({ type: "item.completed", item: { id: "item_2", type: "agent_message", text } });
 emit({ type: "turn.completed", usage: { input_tokens: 1200, cached_input_tokens: 200, output_tokens: 80 } });
 writeFileSync(flag("-o"), text);
