@@ -3,3 +3,4 @@ dist/
 .wm-data/
 *.log
 .env
+.wm-qa-*/
