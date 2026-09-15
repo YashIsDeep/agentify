@@ -24,7 +24,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toasts" role="status" aria-live="polite">
         {toasts.map((toast) => (
-          <div key={toast.id} className={`toast toast-${toast.kind}`}>
+          // Errors stay up for a while, so let them be clicked away.
+          <div
+            key={toast.id}
+            className={`toast toast-${toast.kind}`}
+            title="Dismiss"
+            onClick={() => setToasts((items) => items.filter((item) => item.id !== toast.id))}
+          >
             {toast.message}
           </div>
         ))}

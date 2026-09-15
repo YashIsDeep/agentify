@@ -31,6 +31,15 @@ export function duration(start: number | null, end: number | null, now = Date.no
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/** A moment ahead, as a clock reads it: "2:40 PM" today, "Sat 2:40 PM" this week, else "Sep 14, 2:40 PM". */
+export function clockTime(at: number, now = Date.now()): string {
+  const date = new Date(at);
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (date.toDateString() === new Date(now).toDateString()) return time;
+  if (at > now && at - now < 6 * 86_400_000) return `${date.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
