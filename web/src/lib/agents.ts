@@ -7,6 +7,7 @@ export const AGENTS = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
+  { id: "cursor", label: "Cursor Agent" },
 ] as const;
 
 export const agentLabel = (id: string | null | undefined) => AGENTS.find((agent) => agent.id === id)?.label ?? id ?? "";
