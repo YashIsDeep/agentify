@@ -1,13 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { isTicketLinkType, type TicketDraft, type WorkflowDef } from "@wm/shared";
-import { Sparkles, Ticket } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useApi } from "../api-context";
 import { cleanLinks, hasIssueKey, type LinkDraft } from "../lib/links";
+import { Button, Callout, Dialog, DialogBody, DialogFooter, Field, FieldRow, FormStack, useToast } from "../ui";
 import { LinksField } from "./LinksField";
-import { Modal } from "./Modal";
 import { RepoFields, WorktreeCheck } from "./RepoFields";
-import { useToast } from "./Toast";
 
 export function NewTaskDialog({
   workflows,
@@ -104,8 +103,7 @@ export function NewTaskDialog({
     onError: (error) => toast(error.message, "error"),
   });
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const submit = () => {
     if (form.title.trim()) create.mutate();
   };
 
@@ -126,105 +124,92 @@ export function NewTaskDialog({
   };
 
   return (
-    <Modal title="New task" onClose={requestClose} width={540}>
-      <form onSubmit={submit}>
-        <div className="modal-body form-grid">
-          {/* The only required field, and the one the manual path starts at, so it takes focus. */}
-          <label className="field">
-            <span>Title</span>
-            <input
-              value={form.title}
-              onChange={set("title")}
-              placeholder={drafting ? "Drafting from the ticket…" : "Add login page"}
-              autoFocus
-              required
-            />
-          </label>
-          <label className="field field-optional">
-            <span>Description</span>
-            <textarea
-              value={form.description}
-              onChange={set("description")}
-              rows={4}
-              placeholder={drafting ? "Drafting from the ticket…" : "Markdown supported"}
-            />
-          </label>
-          {/* The other way in: right below the fields it fills, so it needs no extra click. */}
-          <section className="ticket-import fields-optional">
-            <p className="ticket-import-note">
-              <Ticket size={14} />
-              <span>
-                <strong>Import from ticket</strong> — paste a Jira or Linear link and it fills in the title and
-                description above.
-              </span>
-            </p>
-            <LinksField links={links} onChange={setLinks} />
-            {ticket && (
-              <div className="ticket-fill">
-                <button
-                  type="button"
-                  className="button small"
-                  disabled={drafting}
-                  onClick={() => {
-                    if (blank || window.confirm("Replace the title and description with a draft from the ticket?")) {
-                      fillFromTicket(ticket, false);
-                    }
-                  }}
-                >
-                  <Sparkles size={13} className={drafting ? "spin" : undefined} />
-                  {drafting ? "Reading the ticket…" : "Fill in from ticket"}
-                </button>
-              </div>
-            )}
-            {ticket && draftNote && <div className={`callout callout-${draftNote.tone}`}>{draftNote.text}</div>}
-          </section>
-          <div className="field-row">
-            <label className="field">
-              <span>Workflow</span>
-              <select value={form.workflowId} onChange={set("workflowId")}>
-                {workflows.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field field-optional">
-              <span>Start in</span>
-              <select value={form.stageId} onChange={set("stageId")}>
-                {workflow?.stages.map((stage, index) => (
-                  <option key={stage.id} value={index === 0 ? "" : stage.id}>
-                    {stage.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {/* Marked through the wrapper: the repository fields belong to a component shared with the drawer. */}
-          <div className="fields-optional">
-            <RepoFields
-              repoPath={form.repoPath}
-              baseBranch={form.baseBranch}
-              onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
-            />
-          </div>
-          {form.repoPath.trim() !== "" && (
-            <WorktreeCheck
-              checked={form.useWorktree}
-              onChange={(useWorktree) => setForm((current) => ({ ...current, useWorktree }))}
-            />
+    <Dialog title="New task" size="md" onClose={requestClose} onSubmit={submit}>
+      <DialogBody>
+        {/* The only required field, and the one the manual path starts at, so it takes focus. */}
+        <Field label="Title">
+          <input
+            value={form.title}
+            onChange={set("title")}
+            placeholder={drafting ? "Drafting from the ticket…" : "Add login page"}
+            autoFocus
+            required
+          />
+        </Field>
+        <Field label="Description" optional>
+          <textarea
+            value={form.description}
+            onChange={set("description")}
+            rows={4}
+            placeholder={drafting ? "Drafting from the ticket…" : "Markdown supported"}
+          />
+        </Field>
+        {/* The other way in: right below the fields it fills, so it needs no extra click. */}
+        <FormStack>
+          <LinksField
+            links={links}
+            onChange={setLinks}
+            optional
+            tip="Paste a Jira or Linear link and the title and description fill in from the ticket."
+          />
+          {ticket && (
+            <div>
+              <Button
+                size="sm"
+                icon={Sparkles}
+                loading={drafting}
+                loadingText="Reading the ticket…"
+                onClick={() => {
+                  if (blank || window.confirm("Replace the title and description with a draft from the ticket?")) {
+                    fillFromTicket(ticket, false);
+                  }
+                }}
+              >
+                Fill in from ticket
+              </Button>
+            </div>
           )}
-        </div>
-        <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={requestClose}>
-            Cancel
-          </button>
-          <button type="submit" className="button primary" disabled={create.isPending || !form.title.trim()}>
-            Create task
-          </button>
-        </footer>
-      </form>
-    </Modal>
+          {ticket && draftNote && <Callout tone={draftNote.tone}>{draftNote.text}</Callout>}
+        </FormStack>
+        <FieldRow>
+          <Field label="Workflow">
+            <select value={form.workflowId} onChange={set("workflowId")}>
+              {workflows.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Start in">
+            <select value={form.stageId} onChange={set("stageId")}>
+              {workflow?.stages.map((stage, index) => (
+                <option key={stage.id} value={index === 0 ? "" : stage.id}>
+                  {stage.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </FieldRow>
+        <RepoFields
+          repoPath={form.repoPath}
+          baseBranch={form.baseBranch}
+          optional
+          onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
+        />
+        {form.repoPath.trim() !== "" && (
+          <WorktreeCheck
+            checked={form.useWorktree}
+            onChange={(useWorktree) => setForm((current) => ({ ...current, useWorktree }))}
+          />
+        )}
+      </DialogBody>
+      <DialogFooter onCancel={requestClose} busy={create.isPending}>
+        <Button type="submit" variant="primary" disabled={!form.title.trim()} loading={create.isPending} loadingText="Creating…">
+          Create task
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
 

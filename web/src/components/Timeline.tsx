@@ -24,6 +24,7 @@ import {
 import { useState } from "react";
 import { cls, relativeTime } from "../lib/format";
 import { isAgentRun, isApprovalRun } from "../lib/runs";
+import { Button, Tag } from "../ui";
 import { RunLog } from "./RunLog";
 
 interface EventContext {
@@ -122,8 +123,8 @@ function VisitGroup({
       <button type="button" className="visit-header" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span className="visit-name">{visit.stageName}</span>
-        {visit.attempt > 1 && <span className="chip">attempt {visit.attempt}</span>}
-        {current && <span className="chip chip-accent">current</span>}
+        {visit.attempt > 1 && <Tag>attempt {visit.attempt}</Tag>}
+        {current && <Tag tone="accent">current</Tag>}
         <span className="spacer" />
         <span className="muted small" title={new Date(visit.enteredAt).toLocaleString()}>
           {relativeTime(visit.enteredAt, now)}
@@ -163,14 +164,14 @@ function EventItem({ event, context }: { event: TimelineEventView; context: Even
         </div>
         {event.type === "feedback" && <blockquote className="feedback-quote">{event.message}</blockquote>}
         {canShowLog && agentRun && (
-          <button type="button" className="link-button" onClick={() => context.onOpenChat(agentRun)}>
+          <Button variant="link" onClick={() => context.onOpenChat(agentRun)}>
             Open chat
-          </button>
+          </Button>
         )}
         {canShowLog && !agentRun && (
-          <button type="button" className="link-button" onClick={() => setShowLog((value) => !value)}>
+          <Button variant="link" onClick={() => setShowLog((value) => !value)}>
             {showLog ? "Hide output" : "Show output"}
-          </button>
+          </Button>
         )}
         {showLog && event.runId !== null && <RunLog runId={event.runId} live={event.type === "run.started"} archived={archived} />}
       </div>

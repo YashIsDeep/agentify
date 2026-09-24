@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { RunLogLine, RunView, TaskDetail } from "@wm/shared";
+import type { RunLogLine, RunView, StageDef, TaskDetail } from "@wm/shared";
 import {
   Check,
   ChevronDown,
@@ -19,12 +19,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { createPortal } from "react-dom";
 import { useApi } from "../api-context";
 import { type ChatItem, toChatItems, transcriptText } from "../lib/chat";
-import { clockTime, cls, duration, relativeTime, usageSummary } from "../lib/format";
+import { clockTime, cls, relativeTime, runDuration, usageSummary } from "../lib/format";
 import { agentChats, describeAgent, isActiveRun, isAwaitingApproval, isRetryable } from "../lib/runs";
-import { useDialog } from "./Modal";
+import { Button, Dialog, IconButton } from "../ui";
 import { QuestionCard } from "./QuestionCard";
 import { AgentReview } from "./AgentReview";
 import { RunStatusIcon, runStatusLabel } from "./StatusBadge";
@@ -38,6 +37,7 @@ import { RunStatusIcon, runStatusLabel } from "./StatusBadge";
  */
 export function ChatModal({
   detail,
+  stages,
   runId,
   now,
   busy,
@@ -48,6 +48,8 @@ export function ChatModal({
   onClose,
 }: {
   detail: TaskDetail;
+  /** The workflow's stages, to name where a Send back goes. */
+  stages: StageDef[];
   runId: number;
   now: number;
   busy: boolean;
@@ -60,22 +62,14 @@ export function ChatModal({
 }) {
   const chats = agentChats(detail);
   const current = chats.find((chat) => chat.run.id === runId) ?? chats[0];
-  const ref = useRef<HTMLDivElement>(null);
-  useDialog(ref, onClose);
-
   if (!current) return null;
   const { run } = current;
+  const stageDefaults = (stageId: string) => stages.find((stage) => stage.id === stageId)?.agentDefaults;
   // Archiving purges transcripts and ends the task's runs, so there is nothing to act on.
   const archived = detail.task.status === "archived";
 
-  return createPortal(
-    <div
-      className="modal-backdrop"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div ref={ref} className="chat-window" role="dialog" aria-modal="true" aria-label={`${run.label} transcript`} tabIndex={-1}>
+  return (
+    <Dialog title={`${run.label} transcript`} onClose={onClose} bare className="chat-window">
         <nav className="chat-list" aria-label="Chats in this task">
           <div className="chat-list-head">
             <MessagesSquare size={13} />
@@ -92,14 +86,14 @@ export function ChatModal({
                   <span className="chat-list-title">
                     <RunStatusIcon status={entry.status} />
                     <span className="chat-list-label">{entry.label}</span>
-                    {entry.question && <MessageCircleQuestion size={13} className="warn" aria-label="Waiting on you" />}
+                    {entry.question && <MessageCircleQuestion size={13} className="text-warn" aria-label="Waiting on you" />}
                   </span>
                   <span className="chat-list-meta">
                     {visit.stageName}
                     {entry.retryOfRunId && " · retry"}
                   </span>
                   <span className="chat-list-meta">
-                    {describeAgent(entry, detail.task)}
+                    {describeAgent(entry, detail.task, stageDefaults(visit.stageId))}
                     {entry.startedAt && ` · ${relativeTime(entry.startedAt, now)}`}
                   </span>
                 </button>
@@ -114,43 +108,36 @@ export function ChatModal({
             <div className="chat-header-text">
               <strong>{run.label}</strong>
               <span className="muted small">
-                {describeAgent(run, detail.task)}
+                {describeAgent(run, detail.task, stageDefaults(current.visit.stageId))}
                 {run.config.autonomy ? ` · ${run.config.autonomy}` : ""} · {runStatusLabel(run.status)}
                 {run.resumeAt && ` · resets ${clockTime(run.resumeAt, now)}`}
-                {run.startedAt && ` · ${duration(run.startedAt, run.endedAt, now)}`}
+                {run.startedAt && ` · ${runDuration(run, now)}`}
                 {usageSummary(run.usage) && ` · ${usageSummary(run.usage)}`}
               </span>
             </div>
             <span className="spacer" />
             {!archived && run.status === "quota-wait" && (
-              <button type="button" className="button small" onClick={() => onResume(run)} disabled={busy} title="Try again before the reset time">
-                <Play size={12} />
+              <Button size="sm" icon={Play} onClick={() => onResume(run)} disabled={busy} title="Try again before the reset time">
                 Try now
-              </button>
+              </Button>
             )}
             {!archived && isActiveRun(run) && !isAwaitingApproval(run) && (
-              <button type="button" className="button small" onClick={() => onCancel(run)} disabled={busy}>
-                <Square size={12} />
+              <Button size="sm" icon={Square} onClick={() => onCancel(run)} disabled={busy}>
                 Cancel
-              </button>
+              </Button>
             )}
             {!archived && isRetryable(run) && (
-              <button type="button" className="button small" onClick={() => onRetry(run)} disabled={busy}>
-                <RotateCcw size={12} />
+              <Button size="sm" icon={RotateCcw} onClick={() => onRetry(run)} disabled={busy}>
                 Retry
-              </button>
+              </Button>
             )}
-            <button type="button" className="icon-button" onClick={onClose} aria-label="Close chat">
-              <X size={16} />
-            </button>
+            <IconButton label="Close chat" icon={X} onClick={onClose} />
           </header>
 
           <Transcript key={run.id} run={run} now={now} archived={archived} />
-          {!archived && <AgentReview key={run.id} run={run} detail={detail} />}
+          {!archived && <AgentReview key={run.id} run={run} detail={detail} stages={stages} />}
         </section>
-      </div>
-    </div>,
-    document.body,
+    </Dialog>
   );
 }
 
@@ -163,14 +150,29 @@ function Transcript({ run, now, archived }: { run: RunView; now: number; archive
   const followTail = useRef(true);
   const lines = log.data ?? [];
 
+  const pin = () => {
+    const element = bodyRef.current;
+    if (element && followTail.current) element.scrollTop = element.scrollHeight;
+  };
   // A new chat starts at the bottom; an open one only follows if you haven't scrolled away.
   useEffect(() => {
     followTail.current = true;
   }, [run.id]);
+  useEffect(pin, [lines.length, raw]);
+  // A round starting (your revision, your answer) or ending is worth seeing wherever you had scrolled
+  // to: otherwise the previous draft stays in view beside "Ready for review".
+  useEffect(() => {
+    followTail.current = true;
+    pin();
+  }, [run.status, run.question?.id]);
+  // The review card below grows and shrinks with the run, which resizes this without a scroll event.
   useEffect(() => {
     const element = bodyRef.current;
-    if (element && followTail.current) element.scrollTop = element.scrollHeight;
-  }, [lines.length, raw]);
+    if (!element) return;
+    const observer = new ResizeObserver(() => pin());
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const copy = () => {
     void navigator.clipboard.writeText(transcriptText(lines)).then(() => {
@@ -222,22 +224,20 @@ function Transcript({ run, now, archived }: { run: RunView; now: number; archive
         {run.status === "running" && !run.question && (
           <p className="chat-working">
             <span className="chat-dots" aria-hidden="true" />
-            Working… {run.startedAt && duration(run.startedAt, null, now)}
+            Working… {run.startedAt && runDuration({ ...run, endedAt: null }, now)}
           </p>
         )}
       </div>
 
       <footer className="chat-footer">
-        <button type="button" className="button ghost small" onClick={() => setRaw((value) => !value)}>
-          <Terminal size={13} />
+        <Button variant="ghost" size="sm" icon={Terminal} onClick={() => setRaw((value) => !value)}>
           {raw ? "Conversation" : "Raw log"}
-        </button>
+        </Button>
         <span className="spacer" />
         <span className="muted small">{lines.length} lines</span>
-        <button type="button" className="button ghost small" onClick={copy} disabled={lines.length === 0}>
-          {copied ? <Check size={13} /> : <Copy size={13} />}
+        <Button variant="ghost" size="sm" icon={copied ? Check : Copy} onClick={copy} disabled={lines.length === 0}>
           {copied ? "Copied" : "Copy"}
-        </button>
+        </Button>
       </footer>
     </>
   );
@@ -331,9 +331,9 @@ function ToolRow({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
         {!item.result ? (
           <span className="chat-tool-status muted">running</span>
         ) : failed ? (
-          <span className="chat-tool-status danger">failed</span>
+          <span className="chat-tool-status text-danger">failed</span>
         ) : (
-          <Check size={12} className="success" />
+          <Check size={12} className="text-success" />
         )}
       </button>
       {open && (

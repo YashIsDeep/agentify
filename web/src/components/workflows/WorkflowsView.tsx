@@ -1,11 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { WorkflowDef, WorkflowUsage } from "@wm/shared";
-import { Check, ChevronDown, ChevronRight, Copy, Info, MoreHorizontal, Plus, Save, Settings2, Trash2, TriangleAlert, Undo2 } from "lucide-react";
+import type { WorkflowDef } from "@wm/shared";
+import { Check, ChevronRight, Copy, MoreHorizontal, Plus, Save, Trash2, Undo2 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
-import { ApiError } from "../../api";
 import { useApi } from "../../api-context";
-import { useUnsavedChangesGuard } from "../../lib/url-state";
-import { useWorkspaceNavigation } from "../../workspace-context";
 import {
   addBinding,
   addStage,
@@ -20,13 +17,15 @@ import {
   updateStage,
   type Draft,
 } from "../../lib/draft";
+import { countOf } from "../../lib/format";
+import { useUnsavedChangesGuard } from "../../lib/url-state";
+import { Button, Callout, Dialog, DialogBody, DialogFooter, Field, IconButton, Menu, Page, Splash, useToast } from "../../ui";
+import { useWorkspaceNavigation } from "../../workspace-context";
 import { EmojiPicker } from "../EmojiPicker";
-import { Modal } from "../Modal";
-import { Menu } from "../Menu";
-import { useToast } from "../Toast";
 import { BindingForm } from "./BindingForm";
 import { StageColumn } from "./StageColumn";
 import { StageForm } from "./StageForm";
+import { DeleteWorkflowDialog, NewWorkflowDialog } from "./WorkflowDialogs";
 
 type Selection = { kind: "stage"; stageId: string } | { kind: "binding"; bindingId: string } | null;
 
@@ -40,17 +39,24 @@ export function WorkflowsView({ workflows, workflowId }: { workflows: WorkflowDe
   const [creating, setCreating] = useState(false);
   const workflow = workflows.find((candidate) => candidate.id === workflowId) ?? workflows[0];
 
-  if (!workflow) return <>
-    <div className="splash">
-      <strong>No workflows yet</strong>
-      <button type="button" className="button" onClick={() => setCreating(true)}><Plus size={15} />New workflow</button>
-    </div>
-    {creating && <NewWorkflowDialog copyFrom={null} onClose={() => setCreating(false)} onCreated={async (created) => {
-      await queryClient.invalidateQueries({ queryKey: ["workflows"] });
-      setCreating(false);
-      setQueryParams({ workflow: created.id }, { replace: true });
-    }} />}
-  </>;
+  if (!workflow) {
+    return (
+      <>
+        <Splash title="No workflows yet" action={<Button icon={Plus} onClick={() => setCreating(true)}>New workflow</Button>} />
+        {creating && (
+          <NewWorkflowDialog
+            copyFrom={null}
+            onClose={() => setCreating(false)}
+            onCreated={async (created) => {
+              await queryClient.invalidateQueries({ queryKey: ["workflows"] });
+              setCreating(false);
+              setQueryParams({ workflow: created.id }, { replace: true });
+            }}
+          />
+        )}
+      </>
+    );
+  }
   // Remount on switch so the draft never carries over between workflows.
   return (
     <WorkflowEditor
@@ -78,11 +84,18 @@ function WorkflowEditor({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [draft, setDraft] = useState<Draft>(() => toDraft(workflow));
+  // The saved version the draft started from. Another tab (or the API) saving a newer one is
+  // picked up at once while there are no edits here; with edits, you choose, below.
+  const [base, setBase] = useState(workflow);
+  if (workflow.updatedAt !== base.updatedAt && !isDirty(draft, base)) {
+    setBase(workflow);
+    setDraft(toDraft(workflow));
+  }
+  const stale = workflow.updatedAt !== base.updatedAt;
   const [selection, setSelection] = useState<Selection>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState<"blank" | "copy" | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [deleteTasks, setDeleteTasks] = useState(false);
   const [activeStageId, setActiveStageId] = useState(workflow.stages[0]?.id);
   const activeStage = draft.stages.find((stage) => stage.id === activeStageId) ?? draft.stages[0];
   const activeStageIndex = draft.stages.findIndex((stage) => stage.id === activeStage?.id);
@@ -91,7 +104,7 @@ function WorkflowEditor({
   const usage = useQuery({ queryKey: ["workflow-usage", workflow.id], queryFn: () => api.workflowUsage(workflow.id) });
   const connections = useQuery({ queryKey: ["connections"], queryFn: api.connections });
 
-  const dirty = isDirty(draft, workflow);
+  const dirty = isDirty(draft, base);
   const refreshWorkflows = () => queryClient.invalidateQueries({ queryKey: ["workflows"] });
 
   const save = useMutation({
@@ -102,6 +115,7 @@ function WorkflowEditor({
       queryClient.setQueryData<WorkflowDef[]>(["workflows"], (list) =>
         list?.map((candidate) => (candidate.id === saved.id ? saved : candidate)),
       );
+      setBase(saved);
       setDraft(toDraft(saved));
       await refreshWorkflows();
       void queryClient.invalidateQueries({ queryKey: ["workflow-usage", workflow.id] });
@@ -110,25 +124,8 @@ function WorkflowEditor({
     onError: (err) => setError(err.message),
   });
 
-  const remove = useMutation({
-    mutationFn: (force: boolean) => api.deleteWorkflow(workflow.id, force),
-    onSuccess: async () => {
-      setDeleting(false);
-      toast(`Deleted “${workflow.name}”`);
-      const next = workflows.find((candidate) => candidate.id !== workflow.id);
-      if (next) onSelect(next.id, true);
-      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
-      await refreshWorkflows();
-    },
-    onError: (err) => {
-      setDeleting(false);
-      toast(err.message, "error");
-    },
-  });
-
   // Leaving for another page or workflow, or reloading, asks first.
   useUnsavedChangesGuard(dirty ? DISCARD_PROMPT : null);
-  const inUse = usage.data ? usage.data.activeTasks + usage.data.archivedTasks > 0 : false;
 
   const startCreating = (mode: "blank" | "copy") => {
     if (dirty && !confirm(DISCARD_PROMPT)) return;
@@ -151,42 +148,37 @@ function WorkflowEditor({
     setDraft(next);
     setError(null);
   };
+  /** Drops the draft for the newest saved version. */
+  const reload = () => {
+    setBase(workflow);
+    edit(toDraft(workflow));
+  };
   const closeEditor = () => setSelection(null);
 
   return (
-    <div className="page-view wf-view">
-      <div className="page-header">
-        <div>
-          <h2>Workflows</h2>
-          <p className="muted">Design a repeatable path from idea to done.</p>
-        </div>
-        <button type="button" className="button" onClick={() => startCreating("blank")}>
-          <Plus size={14} /> New workflow
-        </button>
-      </div>
-
+    <Page
+      title="Workflows"
+      tip="Saved changes apply the next time a task enters a stage. Actions already running keep their old setup."
+      actions={
+        <Button icon={Plus} onClick={() => startCreating("blank")}>
+          New workflow
+        </Button>
+      }
+      className="wf-view"
+    >
       <section className="wf-overview" aria-label="Workflow details">
         <div className="wf-overview-heading">
-          <EmojiPicker
-            value={draft.icon}
-            onChange={(icon) => edit({ ...draft, icon })}
-            triggerClassName="wf-workflow-icon"
-            triggerSize={22}
-            label="Change workflow icon"
-          />
-          <label className="field wf-picker">
-            <span>Editing workflow</span>
-            <select
-              value={workflow.id}
-              onChange={(event) => onSelect(event.target.value)}
-            >
+          <EmojiPicker value={draft.icon} onChange={(icon) => edit({ ...draft, icon })} size="lg" label="Change workflow icon" />
+          <Field label="Editing workflow" className="wf-picker">
+            <select value={workflow.id} onChange={(event) => onSelect(event.target.value)}>
               {workflows.map((candidate) => (
                 <option key={candidate.id} value={candidate.id}>
-                  {candidate.icon ? `${candidate.icon} ` : ""}{candidate.name}
+                  {candidate.icon ? `${candidate.icon} ` : ""}
+                  {candidate.name}
                 </option>
               ))}
             </select>
-          </label>
+          </Field>
           <div className="wf-overview-counts">
             <span>{countOf(draft.stages.length, "stage")}</span>
             <span>{countOf(allBindings(draft).length, "action")}</span>
@@ -194,119 +186,141 @@ function WorkflowEditor({
           </div>
           <Menu
             label="Workflow actions"
-            trigger={<MoreHorizontal size={18} />}
-            triggerLabel="Workflow actions"
-            triggerClassName="icon-button"
+            trigger={<IconButton label="Workflow actions" icon={MoreHorizontal} />}
             items={[
               { key: "copy", label: "Duplicate workflow", icon: Copy, onSelect: () => startCreating("copy") },
-              { key: "delete", label: "Delete workflow", icon: Trash2, divided: true, onSelect: () => {
-                void usage.refetch();
-                setDeleteTasks(false);
-                setDeleting(true);
-              } },
+              { key: "delete", label: "Delete workflow", icon: Trash2, divided: true, danger: true, onSelect: () => setDeleting(true) },
             ]}
           />
         </div>
-        <p className="wf-description">{draft.description || "Give this workflow a purpose. Add a description below."}</p>
-        <details className="wf-details">
-          <summary><Settings2 size={14} /><span>Name & description</span><ChevronDown size={14} /></summary>
-          <div className="wf-metadata-fields">
-            <label className="field">
-              <span>Name</span>
-              <input value={draft.name} onChange={(event) => edit({ ...draft, name: event.target.value })} />
-            </label>
-            <label className="field">
-              <span>Description</span>
-              <textarea rows={2} value={draft.description} onChange={(event) => edit({ ...draft, description: event.target.value })} placeholder="What is this workflow for?" />
-            </label>
-          </div>
-        </details>
+        <div className="wf-metadata-fields">
+          <Field label="Name">
+            <input value={draft.name} onChange={(event) => edit({ ...draft, name: event.target.value })} />
+          </Field>
+          <Field label="Description" optional>
+            <textarea
+              rows={2}
+              value={draft.description}
+              onChange={(event) => edit({ ...draft, description: event.target.value })}
+              placeholder="What is this workflow for?"
+            />
+          </Field>
+        </div>
       </section>
 
-      {error && (
-        <div className="callout callout-danger">
-          <TriangleAlert size={14} />
-          <span>{error}</span>
-        </div>
+      {stale ? (
+        <Callout tone="warn">
+          This workflow was saved somewhere else while you were editing it.{" "}
+          <Button variant="link" onClick={() => confirm(DISCARD_PROMPT) && reload()}>
+            Load the saved version
+          </Button>
+        </Callout>
+      ) : (
+        error && <Callout tone="danger">{error}</Callout>
+      )}
+      {actions.error && (
+        <Callout tone="danger">
+          Could not load action types.{" "}
+          <Button variant="link" onClick={() => void actions.refetch()}>
+            Try again
+          </Button>
+        </Callout>
       )}
 
-      {actions.error && <div className="callout callout-danger" role="alert">Could not load action types. <button type="button" className="link-button" onClick={() => void actions.refetch()}>Try again</button></div>}
       <div className="wf-workbench">
         <nav className="wf-stage-nav" aria-label="Workflow stages">
-          <div className="wf-nav-heading"><h3>Workflow stages</h3><span className="chip">{draft.stages.length}</span></div>
-          <p className="hint">Select a stage to shape what happens.</p>
-          <label className="field wf-mobile-stage-picker">
-            <span>Select stage</span>
-            <select value={activeStage?.id ?? ""} onChange={(event) => { setActiveStageId(event.target.value); closeEditor(); }}>
-              {draft.stages.map((stage, index) => <option key={stage.id} value={stage.id}>{index + 1}. {stage.name || "Untitled stage"}</option>)}
+          <h3 className="wf-nav-heading">Stages</h3>
+          <Field label="Select stage" className="wf-mobile-stage-picker">
+            <select
+              value={activeStage?.id ?? ""}
+              onChange={(event) => {
+                setActiveStageId(event.target.value);
+                closeEditor();
+              }}
+            >
+              {draft.stages.map((stage, index) => (
+                <option key={stage.id} value={stage.id}>
+                  {index + 1}. {stage.name || "Untitled stage"}
+                </option>
+              ))}
             </select>
-          </label>
+          </Field>
           <ol className="wf-stage-list">
             {draft.stages.map((stage, index) => (
               <li key={stage.id}>
-                <button type="button" className={`wf-stage-link ${stage.id === activeStage?.id ? "is-active" : ""}`}
+                <button
+                  type="button"
+                  className={`wf-stage-link ${stage.id === activeStage?.id ? "is-active" : ""}`}
                   aria-current={stage.id === activeStage?.id ? "step" : undefined}
-                  onClick={() => { setActiveStageId(stage.id); closeEditor(); }}>
-                  <span className="wf-stage-number">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="wf-stage-link-copy"><strong>{stage.name || "Untitled stage"}</strong><span>{stage.bindings.length ? countOf(stage.bindings.length, "action") : "Manual stage"}</span></span>
-                  <ChevronRight size={15} />
+                  onClick={() => {
+                    setActiveStageId(stage.id);
+                    closeEditor();
+                  }}
+                >
+                  <span className="wf-stage-number">{index + 1}</span>
+                  <span className="wf-stage-link-copy">
+                    <strong>{stage.name || "Untitled stage"}</strong>
+                    <span>{stage.bindings.length ? countOf(stage.bindings.length, "action") : "No actions"}</span>
+                  </span>
+                  <ChevronRight size={15} aria-hidden="true" />
                 </button>
               </li>
             ))}
           </ol>
-          <button type="button" className="button wf-create-stage" onClick={() => {
-            const next = addStage(draft);
-            edit(next.draft);
-            setActiveStageId(next.stageId);
-            setSelection({ kind: "stage", stageId: next.stageId });
-          }}><Plus size={15} />Add stage</button>
+          <Button
+            icon={Plus}
+            className="wf-create-stage"
+            onClick={() => {
+              const next = addStage(draft);
+              edit(next.draft);
+              setActiveStageId(next.stageId);
+              setSelection({ kind: "stage", stageId: next.stageId });
+            }}
+          >
+            Add stage
+          </Button>
         </nav>
         <div className="wf-stage-detail">
-        {activeStage && (
-          <StageColumn
-            key={activeStage.id}
-            draft={draft}
-            stage={activeStage}
-            index={activeStageIndex}
-            actions={actions.data ?? []}
-            taskCount={usage.data?.activeByStage[activeStage.id] ?? 0}
-            selected={selection?.kind === "stage" && selection.stageId === activeStage.id}
-            selectedBindingId={selection?.kind === "binding" ? selection.bindingId : null}
-            onSelectStage={() => setSelection({ kind: "stage", stageId: activeStage.id })}
-            onSelectBinding={(bindingId) => setSelection({ kind: "binding", bindingId })}
-            onMove={(delta) => edit({ ...draft, stages: moveItem(draft.stages, activeStageIndex, delta) })}
-            onDelete={() => {
-              setActiveStageId(draft.stages[activeStageIndex + 1]?.id ?? draft.stages[activeStageIndex - 1]?.id);
-              edit(removeStage(draft, activeStage.id));
-              setSelection(null);
-            }}
-            onAddBinding={(action) => {
-              const next = addBinding(draft, activeStage.id, action);
-              edit(next.draft);
-              setSelection({ kind: "binding", bindingId: next.bindingId });
-            }}
-            onMoveBinding={(position, delta) => edit(moveBinding(draft, activeStage.id, position, delta))}
-          />
-        )}
-        <div className="wf-hint"><Info size={15} /><p>Changes apply the next time a task enters a stage. Current actions keep running as configured.</p></div>
+          {activeStage && (
+            <StageColumn
+              key={activeStage.id}
+              draft={draft}
+              stage={activeStage}
+              index={activeStageIndex}
+              actions={actions.data ?? []}
+              taskCount={usage.data?.activeByStage[activeStage.id] ?? 0}
+              selected={selection?.kind === "stage" && selection.stageId === activeStage.id}
+              selectedBindingId={selection?.kind === "binding" ? selection.bindingId : null}
+              onSelectStage={() => setSelection({ kind: "stage", stageId: activeStage.id })}
+              onSelectBinding={(bindingId) => setSelection({ kind: "binding", bindingId })}
+              onMove={(delta) => edit({ ...draft, stages: moveItem(draft.stages, activeStageIndex, delta) })}
+              onDelete={() => {
+                setActiveStageId(draft.stages[activeStageIndex + 1]?.id ?? draft.stages[activeStageIndex - 1]?.id);
+                edit(removeStage(draft, activeStage.id));
+                setSelection(null);
+              }}
+              onAddBinding={(action) => {
+                const next = addBinding(draft, activeStage.id, action);
+                edit(next.draft);
+                setSelection({ kind: "binding", bindingId: next.bindingId });
+              }}
+              onMoveBinding={(position, delta) => edit(moveBinding(draft, activeStage.id, position, delta))}
+            />
+          )}
         </div>
       </div>
 
       {selected?.kind === "stage" && (
-        <Modal title={selected.stage.name || "Stage"} onClose={closeEditor} width={640}>
-          <div className="modal-body">
-            <StageForm
-              stage={selected.stage}
-              taskCount={usage.data?.activeByStage[selected.stage.id] ?? 0}
-              onChange={(patch) => edit(updateStage(draft, selected.stage.id, patch))}
-            />
-          </div>
+        <Dialog title="Stage settings" size="lg" onClose={closeEditor}>
+          <DialogBody>
+            <StageForm stage={selected.stage} onChange={(patch) => edit(updateStage(draft, selected.stage.id, patch))} />
+          </DialogBody>
           <EditorFooter dirty={dirty} onDone={closeEditor} />
-        </Modal>
+        </Dialog>
       )}
       {selected?.kind === "binding" && (
-        <Modal title={selected.binding.label || "Action"} onClose={closeEditor} width={640}>
-          <div className="modal-body">
+        <Dialog title="Action settings" size="lg" onClose={closeEditor}>
+          <DialogBody>
             <BindingForm
               key={selected.binding.id}
               draft={draft}
@@ -316,33 +330,33 @@ function WorkflowEditor({
               connections={connections.data ?? []}
               onChange={(patch) => edit(updateBinding(draft, selected.binding.id, patch))}
             />
-          </div>
+          </DialogBody>
           <EditorFooter dirty={dirty} onDone={closeEditor}>
-            <button
-              type="button"
-              className="button danger ghost"
+            <Button
+              variant="danger"
+              icon={Trash2}
               onClick={() => {
                 edit(removeBinding(draft, selected.binding.id));
                 closeEditor();
               }}
             >
-              <Trash2 size={14} />
               Delete action
-            </button>
+            </Button>
           </EditorFooter>
-        </Modal>
+        </Dialog>
       )}
 
       <div className={`wf-savebar ${dirty ? "wf-savebar-dirty" : ""}`}>
-        <span className={`wf-save-status ${dirty ? "warn" : "muted"}`} role="status">{dirty ? <span className="badge-dot" /> : <Check size={15} />}{dirty ? "Unsaved changes" : "All changes saved"}</span>
-        <button type="button" className="button" disabled={!dirty || save.isPending} onClick={() => edit(toDraft(workflow))}>
-          <Undo2 size={14} />
+        <span className={`wf-save-status ${dirty ? "text-warn" : "muted"}`} role="status">
+          {dirty ? <span className="wf-save-dot" /> : <Check size={15} aria-hidden="true" />}
+          {dirty ? "Unsaved changes" : "All changes saved"}
+        </span>
+        <Button icon={Undo2} disabled={!dirty || save.isPending} onClick={reload}>
           Discard
-        </button>
-        <button type="button" className="button primary" disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
-          <Save size={14} />
-          {save.isPending ? "Saving…" : "Save workflow"}
-        </button>
+        </Button>
+        <Button variant="primary" icon={Save} disabled={!dirty} loading={save.isPending} loadingText="Saving…" onClick={() => save.mutate()}>
+          Save workflow
+        </Button>
       </div>
 
       {creating && (
@@ -358,124 +372,30 @@ function WorkflowEditor({
         />
       )}
       {deleting && (
-        <Modal title="Delete workflow" onClose={() => setDeleting(false)}>
-          <div className="modal-body">
-            <p className="dialog-lead">{workflow.name}</p>
-            {inUse && usage.data ? (
-              <>
-                <div className="callout callout-danger">
-                  <TriangleAlert size={14} />
-                  <span>
-                    {describeUsage(usage.data)} {usage.data.activeTasks + usage.data.archivedTasks === 1 ? "uses" : "use"} this
-                    workflow. Deleting it deletes them too, and that can't be undone.
-                  </span>
-                </div>
-                <ul className="plain-list">
-                  <li>Stops anything still running on those tasks.</li>
-                  <li>Removes their worktrees, discarding uncommitted changes. Branches are kept.</li>
-                  <li>Deletes their timelines, transcripts and artifacts. They won't appear in the Archive.</li>
-                </ul>
-                <label className="checkbox">
-                  <input type="checkbox" checked={deleteTasks} onChange={(event) => setDeleteTasks(event.target.checked)} />
-                  Delete the tasks as well
-                </label>
-              </>
-            ) : (
-              <p className="muted small">This removes the workflow and its stages. No task uses it.</p>
-            )}
-          </div>
-          <footer className="modal-footer">
-            <button type="button" className="button ghost" onClick={() => setDeleting(false)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="button danger"
-              disabled={remove.isPending || usage.isFetching || (inUse && !deleteTasks)}
-              onClick={() => remove.mutate(inUse)}
-            >
-              {inUse ? "Delete workflow and tasks" : "Delete"}
-            </button>
-          </footer>
-        </Modal>
+        <DeleteWorkflowDialog
+          workflow={workflow}
+          onClose={() => setDeleting(false)}
+          onDeleted={async () => {
+            setDeleting(false);
+            const next = workflows.find((candidate) => candidate.id !== workflow.id);
+            if (next) onSelect(next.id, true);
+            void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+            await refreshWorkflows();
+          }}
+        />
       )}
-    </div>
-  );
-}
-
-function NewWorkflowDialog({
-  copyFrom,
-  onClose,
-  onCreated,
-}: {
-  copyFrom: WorkflowDef | null;
-  onClose: () => void;
-  onCreated: (workflow: WorkflowDef) => void | Promise<void>;
-}) {
-  const api = useApi();
-  const [name, setName] = useState(copyFrom ? `${copyFrom.name} copy` : "");
-  const [icon, setIcon] = useState(copyFrom?.icon ?? "");
-  const [error, setError] = useState<string | null>(null);
-  const create = useMutation({
-    mutationFn: () => api.createWorkflow({ name, icon, copyFromWorkflowId: copyFrom?.id ?? null }),
-    onSuccess: (created) => void onCreated(created),
-    onError: (err) => setError(err instanceof ApiError ? err.message : String(err)),
-  });
-
-  return (
-    <Modal title={copyFrom ? `Duplicate ${copyFrom.name}` : "New workflow"} onClose={onClose}>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          create.mutate();
-        }}
-      >
-        <div className="modal-body form-grid">
-          <div className="field wf-name-field">
-            <span>Name</span>
-            <div className="wf-name-row">
-              <EmojiPicker value={icon} onChange={setIcon} triggerClassName="wf-workflow-icon wf-workflow-icon-sm" label="Pick an icon" />
-              <input value={name} onChange={(event) => setName(event.target.value)} autoFocus placeholder="Feature" aria-label="Name" />
-            </div>
-          </div>
-          <p className="hint">
-            {copyFrom ? "Copies every stage and action as last saved." : "Starts with a single Backlog stage."}
-          </p>
-          {error && <div className="callout callout-danger">{error}</div>}
-        </div>
-        <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="button primary" disabled={!name.trim() || create.isPending}>
-            Create
-          </button>
-        </footer>
-      </form>
-    </Modal>
+    </Page>
   );
 }
 
 /** Stage and action dialogs edit the draft in place, so there's nothing to confirm — only a reminder to save. */
 function EditorFooter({ dirty, onDone, children }: { dirty: boolean; onDone: () => void; children?: ReactNode }) {
   return (
-    <footer className="modal-footer wf-editor-footer">
-      {children}
-      <span className="spacer" />
+    <DialogFooter start={children}>
       {dirty && <span className="muted small">Save the workflow to keep these changes.</span>}
-      <button type="button" className="button primary" onClick={onDone}>
+      <Button variant="primary" onClick={onDone}>
         Done
-      </button>
-    </footer>
+      </Button>
+    </DialogFooter>
   );
-}
-
-const countOf = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-
-/** "2 active tasks and 1 archived task" */
-function describeUsage({ activeTasks, archivedTasks }: WorkflowUsage): string {
-  const parts: string[] = [];
-  if (activeTasks) parts.push(countOf(activeTasks, "active task"));
-  if (archivedTasks) parts.push(countOf(archivedTasks, "archived task"));
-  return parts.join(" and ");
 }

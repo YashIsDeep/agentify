@@ -9,97 +9,54 @@ import {
   type StageDef,
 } from "@wm/shared";
 import { Hand, ListOrdered } from "lucide-react";
-import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { agentLabel } from "../lib/agents";
+import { IconButton, Popover } from "../ui";
 
 /**
- * A compact header control reveals the stage's entry actions on demand.
- * A popover rather than an inline expansion: the columns are fixed-height and their bodies scroll,
- * so growing the header would push the cards out of view.
+ * A compact header control that shows the stage's entry actions on demand. A popover rather than an
+ * inline expansion: the columns are fixed-height and their bodies scroll, so growing the header
+ * would push the cards out of view.
  */
 export function StageActions({ stage, stages }: { stage: StageDef; stages: StageDef[] }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
-
   const enabled = stage.bindings.filter((binding) => binding.enabled);
   const switchedOff = stage.bindings.filter((binding) => !binding.enabled);
-  const approvals = enabled.filter(waitsForYou).length;
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    // Capture phase: the triggers stop pointerdown from bubbling, so a click on another column's
-    // trigger would never reach document and both popovers would stand open at once.
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [open]);
-
   if (enabled.length === 0) return null;
 
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (!open || event.key !== "Escape") return;
-    // Stop here so an open task drawer doesn't close along with the popover.
-    event.stopPropagation();
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
   return (
-    <div className="column-actions" ref={rootRef} onKeyDown={onKeyDown}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="column-actions-trigger"
-        aria-expanded={open}
-        aria-controls={panelId}
-        aria-label={`${open ? "Hide" : "Show"} what runs in ${stage.name}`}
-        title={`${enabled.length} ${enabled.length === 1 ? "action" : "actions"}${approvals > 0 ? " · Includes approval" : ""}`}
-        // The header sits inside the column's drop target, so keep the press to this button.
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((value) => !value);
-        }}
-      >
-        <ListOrdered size={15} />
-      </button>
-      {open && (
-        <div id={panelId} className="stage-flow">
-          <p className="stage-flow-head">Runs in order on entry</p>
-          <ol className="stage-flow-list">
-            {enabled.map((binding, index) => (
-              <li key={binding.id} className="stage-flow-step">
-                <span className="stage-flow-index">{index + 1}</span>
-                <span className="stage-flow-body">
-                  <span className="stage-flow-label">{binding.label}</span>
-                  <span className="stage-flow-notes">
-                    <span className="stage-flow-type">{binding.actionType}</span>
-                    {waitsForYou(binding) && (
-                      <span className="stage-flow-wait">
-                        <Hand size={11} />
-                        Waits for you
-                      </span>
-                    )}
-                    {notesFor(binding, stage, stages).map((note) => (
-                      <span key={note} className="stage-flow-note">
-                        {note}
-                      </span>
-                    ))}
+    <Popover
+      label={`What runs in ${stage.name}`}
+      align="end"
+      width={320}
+      className="stage-flow"
+      trigger={<IconButton label={`What runs in ${stage.name}`} icon={ListOrdered} size="sm" />}
+    >
+      <p className="stage-flow-head">Runs in order on entry</p>
+      <ol className="stage-flow-list">
+        {enabled.map((binding, index) => (
+          <li key={binding.id} className="stage-flow-step">
+            <span className="stage-flow-index">{index + 1}</span>
+            <span className="stage-flow-body">
+              <span className="stage-flow-label">{binding.label}</span>
+              <span className="stage-flow-notes">
+                <span className="stage-flow-type">{binding.actionType}</span>
+                {waitsForYou(binding) && (
+                  <span className="stage-flow-wait">
+                    <Hand size={11} aria-hidden="true" />
+                    Waits for you
                   </span>
-                </span>
-              </li>
-            ))}
-          </ol>
-          {switchedOff.length > 0 && (
-            <p className="stage-flow-off">Switched off: {switchedOff.map((binding) => binding.label).join(", ")}</p>
-          )}
-        </div>
+                )}
+                {notesFor(binding, stage, stages).map((note) => (
+                  <span key={note}>{note}</span>
+                ))}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      {switchedOff.length > 0 && (
+        <p className="stage-flow-off">Switched off: {switchedOff.map((binding) => binding.label).join(", ")}</p>
       )}
-    </div>
+    </Popover>
   );
 }
 

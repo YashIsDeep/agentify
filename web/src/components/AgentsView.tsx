@@ -1,47 +1,66 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AgentId, AgentStatus, AgentTestResult } from "@wm/shared";
-import { Bot, Check, ChevronDown, Copy, FlaskConical, RefreshCw, Sparkles, Terminal, TriangleAlert } from "lucide-react";
+import { Bot, Copy, FlaskConical, RefreshCw, Sparkles, Terminal } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "../api-context";
 import { AGENTS } from "../lib/agents";
 import { truncateText, usageSummary } from "../lib/format";
+import {
+  Badge,
+  Button,
+  Callout,
+  Card,
+  CardGrid,
+  CardHeader,
+  DetailList,
+  Disclosure,
+  Field,
+  FieldRow,
+  IconButton,
+  Page,
+  type Tone,
+  useToast,
+} from "../ui";
 import { BrandIcon, hasBrandIcon } from "./BrandIcon";
 import { EffortSelect, keepEffort, ModelSelect, useAgentModels } from "./ModelSelect";
-import { Popover } from "./Popover";
-import { useToast } from "./Toast";
 
 export function AgentsView() {
   const api = useApi();
   const statuses = useQuery({ queryKey: ["agents"], queryFn: api.agents, staleTime: 60_000 });
 
   return (
-    <div className="page-view agents-view">
-      <div className="page-header">
-        <h2>Coding agents</h2>
-        <button type="button" className="button" onClick={() => void statuses.refetch()} disabled={statuses.isFetching}>
-          <RefreshCw size={14} className={statuses.isFetching ? "spin" : undefined} />
+    <Page
+      title="Agents"
+      narrow
+      actions={
+        <Button icon={RefreshCw} loading={statuses.isFetching} onClick={() => void statuses.refetch()}>
           Refresh status
-        </button>
-      </div>
-      {statuses.isLoading && <p className="muted" role="status">Checking installed agents…</p>}
-      {statuses.error && <p className="error">{statuses.error.message}</p>}
-      <div className="agent-grid">
-        {statuses.isLoading && AGENTS.map((agent) => (
-          <div key={agent.id} className="agent-card agent-placeholder" aria-hidden="true"><span className="agent-placeholder-title" /><span /><span /></div>
-        ))}
+        </Button>
+      }
+    >
+      {statuses.error && <Callout tone="danger">{statuses.error.message}</Callout>}
+      <CardGrid>
+        {statuses.isLoading &&
+          AGENTS.map((agent) => (
+            <Card key={agent.id} as="div" className="agent-placeholder" aria-hidden="true">
+              <span className="agent-placeholder-title" />
+              <span />
+              <span />
+            </Card>
+          ))}
         {statuses.data?.map((status) => (
           <AgentCard key={status.id} status={status} />
         ))}
-      </div>
+      </CardGrid>
       <TicketDraftCard />
-    </div>
+    </Page>
   );
 }
 
-function readiness(status: AgentStatus): { label: string; tone: "success" | "warn" | "danger" | "muted" } {
+function readiness(status: AgentStatus): { label: string; tone: Tone } {
   if (!status.installed) return { label: status.error ? "Not found" : "Not installed", tone: "danger" };
   if (status.loggedIn === false) return { label: "Not logged in", tone: "warn" };
-  if (status.loggedIn === null) return { label: "Login unknown", tone: "muted" };
+  if (status.loggedIn === null) return { label: "Login unknown", tone: "neutral" };
   return { label: "Ready", tone: "success" };
 }
 
@@ -89,14 +108,13 @@ function AgentCard({ status }: { status: AgentStatus }) {
   const defaultsUnchanged = defaultModel === (status.defaultModel ?? "") && defaultEffort === (status.defaultEffort ?? "");
 
   return (
-    <section className="agent-card" aria-label={status.label}>
-      <header className="agent-card-header">
-        <span className="agent-avatar" data-brand={status.id}>
-          {hasBrandIcon(status.id) ? <BrandIcon brand={status.id} size={20} /> : <Bot size={20} />}
-        </span>
-        <div className="agent-identity"><h3>{status.label}</h3></div>
-        <span className={`pill pill-${ready.tone}`}>{ready.label}</span>
-      </header>
+    <Card label={status.label}>
+      <CardHeader
+        brand={status.id}
+        icon={hasBrandIcon(status.id) ? <BrandIcon brand={status.id} size={20} /> : <Bot size={20} />}
+        title={status.label}
+        aside={<Badge tone={ready.tone}>{ready.label}</Badge>}
+      />
 
       <form
         className="agent-defaults"
@@ -105,108 +123,89 @@ function AgentCard({ status }: { status: AgentStatus }) {
           saveDefaults.mutate();
         }}
       >
-        <label className="field field-grow">
-          <span>Default model</span>
-          <ModelSelect
-            value={defaultModel}
-            agent={status.id}
-            onChange={(value) => {
-              setDefaultModel(value);
-              setDefaultEffort(keepEffort(models.data, status.id, value, defaultEffort));
-            }}
-          />
-        </label>
-        <label className="field field-narrow">
-          <span>Default effort</span>
-          <EffortSelect value={defaultEffort} agent={status.id} model={defaultModel} onChange={setDefaultEffort} />
-        </label>
+        <FieldRow>
+          <Field label="Default model" grow>
+            <ModelSelect
+              value={defaultModel}
+              agent={status.id}
+              onChange={(value) => {
+                setDefaultModel(value);
+                setDefaultEffort(keepEffort(models.data, status.id, value, defaultEffort));
+              }}
+            />
+          </Field>
+          <Field label="Default effort">
+            <EffortSelect value={defaultEffort} agent={status.id} model={defaultModel} onChange={setDefaultEffort} />
+          </Field>
+        </FieldRow>
         <div className="agent-defaults-footer">
-          <button
-            type="button"
-            className="button small"
-            disabled={!status.installed || test.isPending}
-            title="Send a short, read-only prompt using saved defaults"
+          <Button
+            size="sm"
+            icon={FlaskConical}
+            disabled={!status.installed}
+            loading={test.isPending}
+            loadingText="Testing…"
+            title={defaultsUnchanged ? "Send a short, read-only prompt with these defaults" : "Tests the saved defaults. Save first to test this choice."}
             onClick={() => test.mutate()}
           >
-            <FlaskConical size={14} />
-            {test.isPending ? "Testing…" : "Test agent"}
-          </button>
-          <button type="submit" className={`button small ${defaultsUnchanged ? "ghost" : "primary"}`} disabled={saveDefaults.isPending || defaultsUnchanged}>
-            {saveDefaults.isPending ? "Saving…" : "Save defaults"}
-          </button>
+            Test agent
+          </Button>
+          <Button
+            type="submit"
+            size="sm"
+            variant={defaultsUnchanged ? "ghost" : "primary"}
+            disabled={defaultsUnchanged}
+            loading={saveDefaults.isPending}
+            loadingText="Saving…"
+          >
+            Save defaults
+          </Button>
         </div>
-        {/* Tests run with saved defaults, so only show this reminder when the form differs. */}
-        {!defaultsUnchanged && <p className="hint agent-defaults-notice" role="status">Unsaved changes. Save before testing this model.</p>}
       </form>
-      {test.isPending && <p className="hint" role="status">Waiting for a reply. This can take up to a minute.</p>}
       {testResult &&
         (testResult.ok ? (
-          <div className="callout callout-success">
-            <Check size={14} />
-            <span>
-              Replied “{truncateText(testResult.text, 80)}” in {(testResult.durationMs / 1000).toFixed(1)}s
-              {testResult.usage && usageSummary(testResult.usage) ? ` · ${usageSummary(testResult.usage)}` : ""}
-            </span>
-          </div>
+          <Callout tone="success">
+            Replied “{truncateText(testResult.text, 80)}” in {(testResult.durationMs / 1000).toFixed(1)}s
+            {testResult.usage && usageSummary(testResult.usage) ? ` · ${usageSummary(testResult.usage)}` : ""}
+          </Callout>
         ) : (
-          <div className="callout callout-danger">
-            <TriangleAlert size={14} />
-            <span>{testResult.error}</span>
-          </div>
+          <Callout tone="danger">{testResult.error}</Callout>
         ))}
-      <div className="agent-setup">
-        <Popover
-          label={`${status.label} connection & setup`}
-          triggerClassName="agent-setup-trigger"
-          className="agent-setup-popover"
-          width={400}
-          trigger={<><Terminal size={14} /><span>Connection & setup</span><ChevronDown size={14} /></>}
+      {/* What stops the agent working goes on the card itself, not behind the setup fold. */}
+      {!status.installed && <CommandHint label="Install" command={status.installCommand} />}
+      {status.installed && status.loggedIn === false && (
+        <CommandHint label="Log in from a terminal, then refresh status" command={status.loginCommand} />
+      )}
+      <Disclosure className="agent-setup" summary="Setup" icon={<Terminal size={14} aria-hidden="true" />} defaultOpen={!!status.error}>
+        <DetailList
+          items={[
+            ["Version", status.version],
+            ["Executable", status.path && <span className="mono">{status.path}</span>],
+            ["Login", status.authDetail],
+          ]}
+        />
+        {status.error && <Callout tone="danger">{status.error}</Callout>}
+        <form
+          className="agent-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            savePath.mutate(pathValue);
+          }}
         >
-          <div className="agent-setup-body">
-            <dl className="info">
-              <dt>Version</dt>
-              <dd>{status.version ?? "—"}</dd>
-              <dt>Executable</dt>
-              <dd className="mono">{status.path ?? "—"}</dd>
-              <dt>Login</dt>
-              <dd>{status.authDetail ?? "—"}</dd>
-            </dl>
-
-            {status.error && (
-              <div className="callout callout-danger">
-                <TriangleAlert size={14} />
-                {status.error}
-              </div>
-            )}
-            {!status.installed && <CommandHint label="Install" command={status.installCommand} />}
-            {status.installed && status.loggedIn === false && (
-              <CommandHint label="Log in from a terminal, then refresh status" command={status.loginCommand} />
-            )}
-
-            <form
-              className="agent-row"
-              onSubmit={(event) => {
-                event.preventDefault();
-                savePath.mutate(pathValue);
-              }}
-            >
-              <label className="field field-grow">
-                <span>Executable override</span>
-                <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="Auto-detect from PATH" />
-              </label>
-              <button type="submit" className="button" disabled={savePath.isPending || pathValue === status.pathOverride}>
-                {savePath.isPending ? "Saving…" : "Save path"}
-              </button>
-              {status.pathOverride && (
-                <button type="button" className="button ghost" onClick={() => savePath.mutate(null)} disabled={savePath.isPending}>
-                  Reset
-                </button>
-              )}
-            </form>
-          </div>
-        </Popover>
-      </div>
-    </section>
+          <Field label="Executable override" optional grow>
+            <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="Auto-detect from PATH" />
+          </Field>
+          <Button type="submit" disabled={pathValue === status.pathOverride} loading={savePath.isPending} loadingText="Saving…">
+            Save path
+          </Button>
+          {status.pathOverride && (
+            <Button variant="ghost" onClick={() => savePath.mutate(null)} disabled={savePath.isPending}>
+              Reset
+            </Button>
+          )}
+        </form>
+      </Disclosure>
+    </Card>
   );
 }
 
@@ -233,15 +232,13 @@ function TicketDraftCard() {
   });
 
   return (
-    <section className="agent-card ticket-draft-card">
-      <header className="agent-card-header">
-        <span className="agent-avatar"><Sparkles size={20} /></span>
-        <div className="agent-identity"><h3>Ticket drafting</h3></div>
-      </header>
-      <p className="hint">
-        Draft task titles and descriptions from Jira or Linear tickets.
-      </p>
-      {saved.error && <p className="error small" role="alert">Could not load ticket drafting settings: {saved.error.message}</p>}
+    <Card>
+      <CardHeader
+        icon={<Sparkles size={20} />}
+        title="Ticket drafting"
+        tip="When a new task gets a Jira or Linear link, this agent drafts its title and description from the ticket."
+      />
+      {saved.error && <Callout tone="danger">Could not load ticket drafting settings: {saved.error.message}</Callout>}
       <form
         className="ticket-draft-form"
         onSubmit={(event) => {
@@ -249,64 +246,57 @@ function TicketDraftCard() {
           save.mutate();
         }}
       >
-        <label className="field">
-          <span>Agent</span>
-          <select
-            value={value.agent}
-            disabled={!saved.data}
-            onChange={(event) => setEdit({ agent: event.target.value, model: "", effort: "" })}
-          >
-            <option value="">None — copy the ticket</option>
-            {AGENTS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field field-grow">
-          <span>Model</span>
-          <ModelSelect
-            value={value.model}
-            agent={agent}
-            disabled={!agent || !saved.data}
-            onChange={(model) => setEdit({ ...value, model, effort: keepEffort(models.data, agent, model, value.effort) })}
-          />
-        </label>
-        <label className="field field-narrow">
-          <span>Effort</span>
-          <EffortSelect
-            value={value.effort}
-            agent={agent}
-            model={value.model}
-            disabled={!agent || !saved.data}
-            onChange={(effort) => setEdit({ ...value, effort })}
-          />
-        </label>
-        <button type="submit" className="button" disabled={save.isPending || !edit || !saved.data}>
-          {save.isPending ? "Saving…" : "Save settings"}
-        </button>
+        <FieldRow>
+          <Field label="Agent">
+            <select value={value.agent} disabled={!saved.data} onChange={(event) => setEdit({ agent: event.target.value, model: "", effort: "" })}>
+              <option value="">None — copy the ticket</option>
+              {AGENTS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Model" grow>
+            <ModelSelect
+              value={value.model}
+              agent={agent}
+              disabled={!agent || !saved.data}
+              onChange={(model) => setEdit({ ...value, model, effort: keepEffort(models.data, agent, model, value.effort) })}
+            />
+          </Field>
+          <Field label="Effort">
+            <EffortSelect
+              value={value.effort}
+              agent={agent}
+              model={value.model}
+              disabled={!agent || !saved.data}
+              onChange={(effort) => setEdit({ ...value, effort })}
+            />
+          </Field>
+        </FieldRow>
+        <Button type="submit" variant={edit ? "primary" : "secondary"} disabled={!edit || !saved.data} loading={save.isPending} loadingText="Saving…">
+          Save settings
+        </Button>
       </form>
-    </section>
+    </Card>
   );
 }
 
+/** A shell command to run yourself, with a copy button. */
 function CommandHint({ label, command }: { label: string; command: string }) {
   const toast = useToast();
   return (
-    <div className="command-hint">
-      <span className="label">{label}</span>
+    <Field label={label} group>
       <div className="command">
         <code>{command}</code>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Copy command"
+        <IconButton
+          label="Copy command"
+          icon={Copy}
+          size="sm"
           onClick={() => navigator.clipboard.writeText(command).then(() => toast("Copied"), () => toast("Could not copy", "error"))}
-        >
-          <Copy size={13} />
-        </button>
+        />
       </div>
-    </div>
+    </Field>
   );
 }

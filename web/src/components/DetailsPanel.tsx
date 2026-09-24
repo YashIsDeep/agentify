@@ -1,6 +1,5 @@
 import type { TaskDetail, TaskSummary } from "@wm/shared";
-import { Archive } from "lucide-react";
-import { type FormEvent, Fragment, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
 import { AGENTS } from "../lib/agents";
@@ -8,7 +7,7 @@ import { parseTags } from "../lib/format";
 import { cleanLinks, type LinkDraft } from "../lib/links";
 import { latestOutputs } from "../lib/runs";
 import { useUnsavedChangesGuard } from "../lib/url-state";
-import { ArchiveDialog } from "./dialogs";
+import { Button, DetailList, Field, FieldRow, FormStack } from "../ui";
 import { LinksField } from "./LinksField";
 import { EffortSelect, keepEffort, ModelSelect, useAgentModels } from "./ModelSelect";
 import { RepoFields, WorktreeCheck } from "./RepoFields";
@@ -45,7 +44,6 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
   const readOnly = task.status === "archived";
   const [form, setForm] = useState(() => toForm(task));
   const [dirty, setDirty] = useState(false);
-  const [archiving, setArchiving] = useState(false);
   const save = useTaskAction();
   const models = useAgentModels();
   // Closing the drawer or opening another task used to drop edits without a word.
@@ -85,111 +83,105 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
   return (
     <div className="details">
       <form onSubmit={submit}>
-        <fieldset className="fieldset form-grid" disabled={readOnly}>
-          <label className="field">
-            <span>Title</span>
-            <input value={form.title} onChange={(e) => update({ title: e.target.value })} required />
-          </label>
-          <label className="field">
-            <span>Description</span>
-            <textarea value={form.description} rows={5} onChange={(e) => update({ description: e.target.value })} />
-          </label>
-          <RepoFields repoPath={form.repoPath} baseBranch={form.baseBranch} onChange={update} />
-          {form.repoPath.trim() !== "" && (
-            <WorktreeCheck
-              checked={form.useWorktree || !!task.worktreePath}
-              disabled={!!task.worktreePath}
-              onChange={(useWorktree) => update({ useWorktree })}
-            />
-          )}
-          <label className="field">
-            <span>Tags</span>
-            <input value={form.tags} onChange={(e) => update({ tags: e.target.value })} placeholder="comma separated" />
-          </label>
-
-          <LinksField links={form.links} onChange={(links) => update({ links })} />
-
-          <div className="field-row">
-            <label className="field field-grow">
-              <span>Coding agent</span>
-              <select
-                value={form.agentOverride}
-                onChange={(e) =>
-                  update({
-                    agentOverride: e.target.value,
-                    effortOverride: keepEffort(models.data, e.target.value || null, form.modelOverride, form.effortOverride),
-                  })
-                }
+        {/* A fieldset, so an archived task's whole form is read-only in one go. */}
+        <fieldset className="details-fieldset" disabled={readOnly}>
+          <FormStack>
+            <Field label="Title">
+              <input value={form.title} onChange={(e) => update({ title: e.target.value })} required />
+            </Field>
+            <Field label="Description" optional>
+              <textarea value={form.description} rows={5} onChange={(e) => update({ description: e.target.value })} />
+            </Field>
+            <RepoFields repoPath={form.repoPath} baseBranch={form.baseBranch} optional onChange={update} />
+            {form.repoPath.trim() !== "" && (
+              <WorktreeCheck
+                checked={form.useWorktree || !!task.worktreePath}
+                disabled={!!task.worktreePath}
+                onChange={(useWorktree) => update({ useWorktree })}
+              />
+            )}
+            <Field label="Tags" optional>
+              <input value={form.tags} onChange={(e) => update({ tags: e.target.value })} placeholder="Comma-separated, e.g. ui, backend" />
+            </Field>
+            <LinksField links={form.links} optional onChange={(links) => update({ links })} />
+            <FieldRow>
+              <Field
+                label="Coding agent"
+                grow
+                tip="Overrides every coding-agent action on this task, ahead of the action's and stage's own choices. The Retry dialog can override again."
               >
-                <option value="">No override</option>
-                {AGENTS.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field field-grow">
-              <span>Model</span>
-              <ModelSelect
-                value={form.modelOverride}
-                agent={form.agentOverride || null}
-                blankLabel="No override"
-                onChange={(value) =>
-                  update({
-                    modelOverride: value,
-                    effortOverride: keepEffort(models.data, form.agentOverride || null, value, form.effortOverride),
-                  })
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Effort</span>
-              <EffortSelect
-                value={form.effortOverride}
-                agent={form.agentOverride || null}
-                model={form.modelOverride}
-                blankLabel="No override"
-                onChange={(value) => update({ effortOverride: value })}
-              />
-            </label>
-          </div>
-          <p className="hint">
-            Overrides apply to every coding-agent action on this task, ahead of the action's and stage's own choices; the
-            Retry dialog can override again.
-          </p>
+                <select
+                  value={form.agentOverride}
+                  onChange={(e) =>
+                    update({
+                      agentOverride: e.target.value,
+                      effortOverride: keepEffort(models.data, e.target.value || null, form.modelOverride, form.effortOverride),
+                    })
+                  }
+                >
+                  <option value="">No override</option>
+                  {AGENTS.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Model" grow>
+                <ModelSelect
+                  value={form.modelOverride}
+                  agent={form.agentOverride || null}
+                  blankLabel="No override"
+                  onChange={(value) =>
+                    update({
+                      modelOverride: value,
+                      effortOverride: keepEffort(models.data, form.agentOverride || null, value, form.effortOverride),
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Effort">
+                <EffortSelect
+                  value={form.effortOverride}
+                  agent={form.agentOverride || null}
+                  model={form.modelOverride}
+                  blankLabel="No override"
+                  onChange={(value) => update({ effortOverride: value })}
+                />
+              </Field>
+            </FieldRow>
+          </FormStack>
         </fieldset>
         {!readOnly && (
           <div className="form-actions">
             {dirty && (
-              <button
-                type="button"
-                className="button ghost"
+              <Button
+                variant="ghost"
                 onClick={() => {
                   setForm(toForm(task));
                   setDirty(false);
                 }}
               >
                 Discard
-              </button>
+              </Button>
             )}
-            <button type="submit" className="button primary" disabled={!dirty || save.isPending || !form.title.trim()}>
+            <Button type="submit" variant="primary" disabled={!dirty || !form.title.trim()} loading={save.isPending} loadingText="Saving…">
               Save changes
-            </button>
+            </Button>
           </div>
         )}
       </form>
 
       <section className="info-section">
         <h4>Git</h4>
-        <dl className="info">
-          <dt>Branch</dt>
-          <dd className="mono">{task.branch ?? "—"}</dd>
-          <dt>Base</dt>
-          <dd className="mono">{task.baseBranch ?? "—"}</dd>
-          <dt>Worktree</dt>
-          <dd className="mono">{task.worktreePath ?? "—"}</dd>
-        </dl>
+        <DetailList
+          mono
+          items={[
+            ["Branch", task.branch],
+            ["Base", task.baseBranch],
+            ["Worktree", task.worktreePath],
+          ]}
+        />
       </section>
 
       {outputs.length > 0 && (
@@ -200,16 +192,7 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
               <div className="output-label">
                 {output.label} <code>{output.key}</code>
               </div>
-              <dl className="info">
-                {Object.entries(output.outputs).map(([key, value]) => (
-                  <Fragment key={key}>
-                    <dt>{key}</dt>
-                    <dd className="mono">
-                      <OutputValue value={value} />
-                    </dd>
-                  </Fragment>
-                ))}
-              </dl>
+              <DetailList mono items={Object.entries(output.outputs).map(([key, value]) => [key, <OutputValue value={value} />])} />
             </div>
           ))}
         </section>
@@ -217,31 +200,13 @@ export function DetailsPanel({ detail }: { detail: TaskDetail }) {
 
       <section className="info-section">
         <h4>History</h4>
-        <dl className="info">
-          <dt>Created</dt>
-          <dd>{new Date(task.createdAt).toLocaleString()}</dd>
-          {task.archivedAt && (
-            <>
-              <dt>Archived</dt>
-              <dd>{new Date(task.archivedAt).toLocaleString()}</dd>
-            </>
-          )}
-        </dl>
+        <DetailList
+          items={[
+            ["Created", new Date(task.createdAt).toLocaleString()],
+            ...(task.archivedAt ? ([["Archived", new Date(task.archivedAt).toLocaleString()]] as [string, string][]) : []),
+          ]}
+        />
       </section>
-
-      {!readOnly && (
-        <section className="danger-zone">
-          <div>
-            <h4>Archive task</h4>
-            <p className="muted small">Removes the worktree (branch kept) and transcripts. Artifacts and the timeline stay.</p>
-          </div>
-          <button type="button" className="button danger" onClick={() => setArchiving(true)}>
-            <Archive size={14} />
-            Archive
-          </button>
-        </section>
-      )}
-      {archiving && <ArchiveDialog task={task} onClose={() => setArchiving(false)} />}
     </div>
   );
 }

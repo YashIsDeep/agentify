@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApi } from "../api-context";
+import { Checkbox, Field, FieldRow } from "../ui";
 
 const OTHER = "\u0000other";
 
@@ -13,10 +14,12 @@ const OTHER = "\u0000other";
 export function RepoFields({
   repoPath,
   baseBranch,
+  optional = false,
   onChange,
 }: {
   repoPath: string;
   baseBranch: string;
+  optional?: boolean;
   onChange: (patch: { repoPath?: string; baseBranch?: string }) => void;
 }) {
   const api = useApi();
@@ -41,9 +44,8 @@ export function RepoFields({
   const selectValue = typing || (repoPath !== "" && !listed && !pending) ? OTHER : repoPath;
 
   return (
-    <div className="field-row">
-      <label className="field field-grow">
-        <span>Repository</span>
+    <FieldRow>
+      <Field label="Repository" optional={optional} grow error={repoPath !== "" && branches.isError ? branches.error.message : undefined}>
         <select
           value={selectValue}
           onChange={(event) => {
@@ -72,11 +74,9 @@ export function RepoFields({
             onChange={(event) => onChange({ repoPath: event.target.value })}
           />
         )}
-        {repoPath !== "" && branches.isError && <span className="hint error">{branches.error.message}</span>}
-      </label>
+      </Field>
 
-      <label className="field">
-        <span>Base branch</span>
+      <Field label="Base branch" optional={optional}>
         <select
           value={baseBranch}
           disabled={repoPath === "" || branches.isError}
@@ -93,8 +93,8 @@ export function RepoFields({
             <option value={baseBranch}>{baseBranch} — not in this repo</option>
           )}
         </select>
-      </label>
-    </div>
+      </Field>
+    </FieldRow>
   );
 }
 
@@ -109,16 +109,16 @@ export function WorktreeCheck({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="field field-check">
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
-      <span>Use a worktree</span>
-      <span className="hint">
-        {disabled
+    <Checkbox
+      checked={checked}
+      disabled={disabled}
+      onChange={onChange}
+      label="Use a worktree"
+      tip={
+        disabled
           ? "The worktree already exists; archiving the task removes it."
-          : checked
-            ? "Work happens on a new branch in a separate checkout, so tasks on the same repo don't collide."
-            : "Agents and commands work directly in the repository's checkout, on whatever branch it has."}
-      </span>
-    </label>
+          : "Work happens on a new branch in a separate checkout, so tasks on the same repository don't collide. Off, agents and commands work in the repository's own checkout."
+      }
+    />
   );
 }

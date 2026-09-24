@@ -1,9 +1,9 @@
 import { type ActionTypeInfo, APPROVAL_ACTION } from "@wm/shared";
-import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, CircleDot, Hand, Plus, Settings2, Terminal, Trash2, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Hand, Plus, Settings2, Terminal, Trash2, Zap } from "lucide-react";
 import { agentLabel } from "../../lib/agents";
 import type { Draft, DraftStage } from "../../lib/draft";
-import { cls } from "../../lib/format";
-import { Menu } from "../Menu";
+import { cls, countOf } from "../../lib/format";
+import { Button, IconButton, InfoTip, Menu, Tag } from "../../ui";
 
 /** The focused stage editor, with actions in execution order. */
 export function StageColumn({
@@ -41,46 +41,37 @@ export function StageColumn({
     <section className={cls("wf-column", selected && "wf-column-selected")}>
       <header className="wf-column-header">
         <div className="wf-stage-title"><span className="wf-eyebrow">Stage {index + 1} of {draft.stages.length}</span><h3>{stage.name || "Untitled stage"}</h3></div>
-        <button type="button" className="button" onClick={onSelectStage}><Settings2 size={14} />Stage settings</button>
+        <Button icon={Settings2} onClick={onSelectStage}>
+          Stage settings
+        </Button>
       </header>
       <div className="wf-stage-toolbar">
-        <span className="hint">{taskCount} active {taskCount === 1 ? "task" : "tasks"}{stage.wipLimit ? ` · WIP limit ${stage.wipLimit}` : " · No task limit"}</span>
+        <span className="muted small">
+          {countOf(taskCount, "active task")}
+          {stage.wipLimit ? ` · WIP limit ${stage.wipLimit}` : ""}
+        </span>
         <div className="wf-stage-tools">
-          <button type="button" className="icon-button" aria-label="Move stage earlier" title="Move stage earlier" onClick={() => onMove(-1)} disabled={index === 0}>
-            <ArrowUp size={14} />
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Move stage later"
-            title="Move stage later"
-            onClick={() => onMove(1)}
-            disabled={index === draft.stages.length - 1}
-          >
-            <ArrowDown size={14} />
-          </button>
-          <button
-            type="button"
-            className="icon-button danger"
-            aria-label={`Delete ${stage.name}`}
+          <IconButton label="Move stage earlier" icon={ArrowUp} onClick={() => onMove(-1)} disabled={index === 0} />
+          <IconButton label="Move stage later" icon={ArrowDown} onClick={() => onMove(1)} disabled={index === draft.stages.length - 1} />
+          <IconButton
+            label={`Delete ${stage.name}`}
+            icon={Trash2}
+            variant="danger"
             onClick={onDelete}
             // Refused on save anyway; saying so here beats finding out after a round of other edits.
             disabled={draft.stages.length === 1 || taskCount > 0}
-            title={
-              draft.stages.length === 1
-                ? "A workflow needs at least one stage"
-                : taskCount > 0
-                  ? `Tasks are still in ${stage.name}; move them on before deleting it`
-                  : `Delete ${stage.name}`
+            disabledReason={
+              draft.stages.length === 1 ? "A workflow needs at least one stage" : `Tasks are still in ${stage.name}; move them on before deleting it`
             }
-          >
-            <Trash2 size={13} />
-          </button>
+          />
         </div>
       </div>
-      {stage.agentDefaults.agent && <div className="wf-stage-agent" title={stage.agentDefaults.model ?? undefined}>{agentLabel(stage.agentDefaults.agent)}{stage.agentDefaults.model ? ` · ${stage.agentDefaults.model}` : ""}</div>}
-      <div className="wf-action-heading"><div><h4>Actions <span className="chip">{stage.bindings.length}</span></h4><p className="hint">Run in order when a task enters this stage.</p></div><AddAction actions={actions} onAdd={onAddBinding} /></div>
-      {/* Scrolls as one piece so the end-of-sequence marker only shows when the last action does. */}
+      {stage.agentDefaults.agent && (
+        <div className="wf-stage-agent">
+          {[agentLabel(stage.agentDefaults.agent), stage.agentDefaults.model, stage.agentDefaults.effort].filter(Boolean).join(" · ")}
+        </div>
+      )}
+      <div className="wf-action-heading"><h4>Actions <Tag>{stage.bindings.length}</Tag><InfoTip>Run top to bottom, one at a time, when a task enters this stage.</InfoTip></h4><AddAction actions={actions} onAdd={onAddBinding} /></div>
       <div className="wf-sequence">
         <ol className="wf-bindings">
           {stage.bindings.map((binding, position) => (
@@ -91,7 +82,7 @@ export function StageColumn({
                 onClick={() => onSelectBinding(binding.id)}
                 title={binding.enabled ? undefined : "Switched off"}
               >
-                <span className="action-index">{String(position + 1).padStart(2, "0")}</span>
+                <span className="action-index">{position + 1}</span>
                 <span className={`wf-action-icon ${binding.actionType === APPROVAL_ACTION ? "is-approval" : ""}`}>
                   {binding.actionType === APPROVAL_ACTION ? <Hand size={17} /> : binding.actionType === "coding-agent" ? <Bot size={17} /> : binding.actionType === "shell" ? <Terminal size={17} /> : <Zap size={17} />}
                 </span>
@@ -99,43 +90,42 @@ export function StageColumn({
                   <span className="wf-binding-label">{binding.label || label(binding.actionType)}</span>
                   <span className="wf-binding-type">{label(binding.actionType)}</span>
                 </span>
-                {!binding.enabled && <span className="chip">Disabled</span>}
+                {!binding.enabled && <Tag>Off</Tag>}
                 <ChevronRight size={15} />
               </button>
               <span className="wf-binding-move">
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={`Move ${binding.label} up`}
-                  disabled={position === 0}
-                  onClick={() => onMoveBinding(position, -1)}
-                >
-                  <ChevronUp size={12} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={`Move ${binding.label} down`}
+                <IconButton label={`Move ${binding.label} up`} icon={ChevronUp} size="sm" disabled={position === 0} onClick={() => onMoveBinding(position, -1)} />
+                <IconButton
+                  label={`Move ${binding.label} down`}
+                  icon={ChevronDown}
+                  size="sm"
                   disabled={position === stage.bindings.length - 1}
                   onClick={() => onMoveBinding(position, 1)}
-                >
-                  <ChevronDown size={12} />
-                </button>
+                />
               </span>
             </li>
           ))}
-          {stage.bindings.length === 0 && <li className="wf-empty"><span className="wf-empty-icon"><CircleDot size={24} /></span><strong>A little breathing room</strong><span>Tasks pause here until you move them.<br />Add an action when you’re ready to automate this step.</span></li>}
+          {stage.bindings.length === 0 && <li className="wf-empty"><strong>No actions</strong><span>Tasks wait here until you move them on.</span></li>}
         </ol>
-        {stage.bindings.length > 0 && <p className="wf-sequence-end"><CircleDot size={12} />End of this stage’s action sequence</p>}
       </div>
     </section>
   );
 }
 
 function AddAction({ actions, onAdd }: { actions: ActionTypeInfo[]; onAdd: (action: ActionTypeInfo) => void }) {
-  if (actions.length === 0) return <button type="button" className="button" disabled><Plus size={14} />Add action</button>;
+  const trigger = (
+    <Button icon={Plus} disabled={actions.length === 0}>
+      Add action
+      <ChevronDown size={13} aria-hidden="true" />
+    </Button>
+  );
+  if (actions.length === 0) return trigger;
   return (
-    <div className="wf-action-menu"><Menu label="Choose an action" trigger={<><Plus size={14} />Add action<ChevronDown size={13} /></>} triggerClassName="button"
-      items={actions.map((action) => ({ key: action.type, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))} /></div>
+    <Menu
+      label="Choose an action"
+      width={340}
+      trigger={trigger}
+      items={actions.map((action) => ({ key: action.type, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))}
+    />
   );
 }

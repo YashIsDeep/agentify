@@ -3,11 +3,15 @@ import { Menu as MenuIcon, Workflow, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cls } from "../lib/format";
 import { PAGES, type View } from "../views";
-import { FOCUSABLE, isModalOpen } from "./Modal";
+import { isDialogOpen } from "../ui";
 import { StatusCounters } from "./StatusCounters";
 import { ThemeToggle } from "./ThemeToggle";
 import { WorkflowIcon } from "./WorkflowIcon";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+
+/** Everything the browser would stop at on Tab: the drawer keeps focus inside itself with it. */
+const FOCUSABLE =
+  'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 export function Sidebar({
   workflows,
@@ -55,8 +59,8 @@ export function Sidebar({
     const onKeyDown = (event: KeyboardEvent) => {
       const aside = asideRef.current;
       const toggle = toggleRef.current;
-      // A dialog opened from the drawer sits on top of it, and answers the keyboard itself.
-      if (!open || !aside || !toggle || isModalOpen()) return;
+      // A dialog or menu opened from the drawer sits on top of it, and answers the keyboard itself.
+      if (!open || !aside || !toggle || isDialogOpen() || event.defaultPrevented) return;
       if (event.key === "Escape") return setOpen(false);
       if (event.key !== "Tab" || !isDrawer()) return;
       // The page behind the scrim is out of reach, and the toggle is the drawer's close button.

@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { type AgentModelList, effortsFor } from "@wm/shared";
 import { useApi } from "../api-context";
+import { agentLabel } from "../lib/agents";
+import { FieldError } from "../ui";
 
 /** The models each agent accepts, sourced from the CLIs themselves where they can say. */
 export function useAgentModels() {
@@ -35,25 +37,44 @@ export function ModelSelect({
 }) {
   const models = useAgentModels();
   const options = modelsFor(models.data, agent);
-  const unrecognised = value.trim() !== "" && !options.includes(value);
+  // Until the CLIs have answered there is nothing to check against, so a saved value is just shown.
+  const missing = value.trim() !== "" && !options.includes(value);
+  const unrecognised = missing && models.data !== undefined;
+  // With no agent chosen, every agent's models are on offer; grouped, so you can tell whose is whose.
+  const groups = !agent && models.data ? models.data.filter((list) => list.models.length > 0) : null;
 
   return (
     <>
       <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
         <option value="">{blankLabel}</option>
-        {options.map((model) => (
-          <option key={model} value={model}>
-            {model}
+        {groups
+          ? groups.map((list) => (
+              <optgroup key={list.agent} label={agentLabel(list.agent)}>
+                {list.models.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </optgroup>
+            ))
+          : options.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+        {missing && (
+          <option value={value}>
+            {value}
+            {unrecognised ? " — not recognised" : ""}
           </option>
-        ))}
-        {unrecognised && <option value={value}>{value} — not recognised</option>}
+        )}
       </select>
       {unrecognised && (
-        <span className="hint error">
+        <FieldError>
           {agent ? `No such model for this agent.` : "No installed agent offers this model."} Pick one from the list.
-        </span>
+        </FieldError>
       )}
-      {models.isError && <span className="hint error">Could not load the model list: {models.error.message}</span>}
+      {models.isError && <FieldError>Could not load the model list: {models.error.message}</FieldError>}
     </>
   );
 }
@@ -109,7 +130,7 @@ export function EffortSelect({
   return (
     <>
       <select value={value} disabled={disabled || nothing} onChange={(event) => onChange(event.target.value)}>
-        <option value="">{nothing ? ((model ?? "").trim() ? "Not offered by this model" : "Choose a model first") : blankLabel}</option>
+        <option value="">{nothing ? ((model ?? "").trim() ? "Not offered by this model" : "Needs a model") : blankLabel}</option>
         {options.map((effort) => (
           <option key={effort} value={effort}>
             {effort}
@@ -122,7 +143,7 @@ export function EffortSelect({
           </option>
         )}
       </select>
-      {unsupported && <span className="hint error">This model doesn't offer that effort. Pick one from the list.</span>}
+      {unsupported && <FieldError>This model doesn't offer that effort. Pick one from the list.</FieldError>}
     </>
   );
 }

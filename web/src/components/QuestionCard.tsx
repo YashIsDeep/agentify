@@ -3,6 +3,8 @@ import { MessageCircleQuestion, Send, SkipForward } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
+import { combineAnswer } from "../lib/questions";
+import { Button } from "../ui";
 
 /**
  * A question the agent is blocked on. Rendered inline with its run, because that is where the
@@ -11,14 +13,20 @@ import { useTaskAction } from "../hooks";
 export function QuestionCard({ question }: { question: AgentQuestion }) {
   const api = useApi();
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Typed beside a choice: your own answer when no option fits, or a note on the one you picked.
+  const [notes, setNotes] = useState<Record<string, string>>({});
   const action = useTaskAction();
 
   const set = (id: string, value: string) => setAnswers((current) => ({ ...current, [id]: value }));
-  const answered = question.fields.filter((field) => answers[field.id]?.trim()).length;
+  const setNote = (id: string, value: string) => setNotes((current) => ({ ...current, [id]: value }));
+  const final = Object.fromEntries(
+    question.fields.map((field) => [field.id, combineAnswer(answers[field.id], field.kind === "choice" ? notes[field.id] : undefined)]),
+  );
+  const answered = question.fields.filter((field) => final[field.id]).length;
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    action.mutate(() => api.answerQuestion(question.id, { answers, skip: false }));
+    action.mutate(() => api.answerQuestion(question.id, { answers: final, skip: false }));
   };
 
   return (
@@ -48,6 +56,13 @@ export function QuestionCard({ question }: { question: AgentQuestion }) {
                     <span>{option}</span>
                   </label>
                 ))}
+                <input
+                  className="question-note"
+                  aria-label={`Your own answer, or a note on your choice: ${field.text}`}
+                  placeholder="Your own answer, or a note…"
+                  value={notes[field.id] ?? ""}
+                  onChange={(event) => setNote(field.id, event.target.value)}
+                />
               </div>
             ) : field.multiline ? (
               <textarea rows={3} value={answers[field.id] ?? ""} onChange={(event) => set(field.id, event.target.value)} />
@@ -59,24 +74,23 @@ export function QuestionCard({ question }: { question: AgentQuestion }) {
       </ol>
 
       <div className="question-actions">
-        <button
-          type="button"
-          className="button ghost small"
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={SkipForward}
           disabled={action.isPending}
           title="The agent carries on using its own judgement"
           onClick={() => action.mutate(() => api.answerQuestion(question.id, { answers: {}, skip: true }))}
         >
-          <SkipForward size={13} />
           Let it decide
-        </button>
+        </Button>
         <span className="spacer" />
         <span className="muted small">
           {answered} of {question.fields.length} answered
         </span>
-        <button type="submit" className="button primary small" disabled={action.isPending || answered === 0}>
-          <Send size={13} />
-          {action.isPending ? "Sending…" : "Send answer"}
-        </button>
+        <Button type="submit" variant="primary" size="sm" icon={Send} disabled={answered === 0} loading={action.isPending} loadingText="Sending…">
+          Send answer
+        </Button>
       </div>
     </form>
   );

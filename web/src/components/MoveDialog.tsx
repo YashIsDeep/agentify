@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import type { StageDef, TaskSummary } from "@wm/shared";
-import { ArrowRight, TriangleAlert } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { ArrowRight } from "lucide-react";
+import { useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
 import { entryActionLabels, isActiveRun, latestAttempts } from "../lib/runs";
-import { Modal } from "./Modal";
+import { Button, Callout, Checkbox, Dialog, DialogBody, DialogFooter, Tag } from "../ui";
 
 export function MoveDialog({
   task,
@@ -30,45 +30,33 @@ export function MoveDialog({
     ? latestAttempts(visit.runs).some(isActiveRun)
     : task.badge === "running" || task.badge === "queued" || task.badge === "quota";
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    move.mutate(() => api.moveTask(task.id, to.id, runActions), { onSuccess: onClose });
-  };
-
   return (
-    <Modal title="Move task" onClose={onClose}>
-      <form onSubmit={submit}>
-        <div className="modal-body">
-          <p className="dialog-lead">{task.title}</p>
-          <div className="move-route">
-            <span className="chip">{from?.name ?? "—"}</span>
-            <ArrowRight size={14} />
-            <span className="chip chip-strong">{to.name}</span>
-          </div>
-          {hasActiveRuns && (
-            <div className="callout callout-warn">
-              <TriangleAlert size={14} />
-              Actions still running in {from?.name ?? "the current stage"} will be cancelled.
-            </div>
-          )}
-          <label className="checkbox">
-            <input type="checkbox" checked={runActions} onChange={(event) => setRunActions(event.target.checked)} />
-            Run its actions
-          </label>
-          <p className="hint">
+    <Dialog
+      title="Move task"
+      onClose={onClose}
+      onSubmit={() => move.mutate(() => api.moveTask(task.id, to.id, runActions), { onSuccess: onClose })}
+    >
+      <DialogBody lead={task.title}>
+        <div className="move-route">
+          <Tag>{from?.name ?? "—"}</Tag>
+          <ArrowRight size={14} aria-hidden="true" />
+          <Tag tone="accent">{to.name}</Tag>
+        </div>
+        {hasActiveRuns && (
+          <Callout tone="warn">Actions still running in {from?.name ?? "the current stage"} will be cancelled.</Callout>
+        )}
+        <div>
+          <Checkbox checked={runActions} onChange={setRunActions} label="Run its actions" />
+          <p className="muted small move-actions">
             {entryActions.length > 0 ? `In order: ${entryActions.join(" → ")}.` : `${to.name} has no actions.`}
-            {!runActions && entryActions.length > 0 && " You can start them from the task later."}
           </p>
         </div>
-        <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="button primary" disabled={move.isPending} autoFocus>
-            Move to {to.name}
-          </button>
-        </footer>
-      </form>
-    </Modal>
+      </DialogBody>
+      <DialogFooter onCancel={onClose} busy={move.isPending}>
+        <Button type="submit" variant="primary" loading={move.isPending} loadingText="Moving…" autoFocus>
+          Move to {to.name}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useApi } from "../api-context";
 import { diffLineClass, splitPatch } from "../lib/diff";
 import { cls } from "../lib/format";
-import { useToast } from "./Toast";
+import { IconButton, useToast } from "../ui";
 
 const STATUS_LETTER: Record<TaskDiffFile["status"], string> = {
   added: "A",
@@ -40,19 +40,8 @@ export function DiffPanel({ task }: { task: TaskSummary }) {
         )}
         <span className="spacer" />
         {/* Worth having even when the diff is too big to read here — the path is the way into it. */}
-        <button type="button" className="icon-button" title={`Copy ${path}`} aria-label="Copy the worktree path" onClick={copyPath}>
-          <Copy size={13} />
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          title="Read the diff again"
-          aria-label="Refresh the diff"
-          disabled={diff.isFetching}
-          onClick={() => void diff.refetch()}
-        >
-          <RefreshCw size={13} />
-        </button>
+        <IconButton label={`Copy ${path}`} icon={Copy} size="sm" onClick={copyPath} />
+        <IconButton label="Read the diff again" icon={RefreshCw} size="sm" disabled={diff.isFetching} onClick={() => void diff.refetch()} />
       </div>
       {diff.isLoading ? (
         <p className="muted small">Reading the diff…</p>
@@ -84,16 +73,19 @@ function DiffFiles({ diff }: { diff: TaskDiff }) {
                 className="diff-file"
                 aria-expanded={open}
                 disabled={!patch}
-                title={patch ? undefined : file.untracked ? "Not added to git yet" : "No hunks to show"}
+                title={patch ? undefined : "No hunks to show"}
                 onClick={() => setOpenPath(open ? null : file.path)}
               >
                 {patch ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : <span className="chevron-space" />}
-                <span className={cls("diff-status", `diff-status-${file.status}`)}>{STATUS_LETTER[file.status]}</span>
+                <span
+                  className={cls("diff-status", `diff-status-${file.status}`)}
+                  title={file.untracked ? "New, not added to git yet" : undefined}
+                >
+                  {STATUS_LETTER[file.status]}
+                </span>
                 <span className="diff-path">{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</span>
                 <span className="diff-counts">
-                  {file.untracked ? (
-                    <span className="muted">untracked</span>
-                  ) : file.binary ? (
+                  {file.binary ? (
                     <span className="muted">binary</span>
                   ) : (
                     <>

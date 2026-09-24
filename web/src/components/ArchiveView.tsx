@@ -4,6 +4,7 @@ import { Archive, Search } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "../api-context";
 import { cls, relativeTime } from "../lib/format";
+import { Button, Callout, EmptyState, Page, SearchInput, Tag, TagList } from "../ui";
 
 export function ArchiveView({
   workflows,
@@ -31,47 +32,33 @@ export function ArchiveView({
     : all;
 
   return (
-    <div className="archive-view">
-      <div className="archive-header">
-        <div>
-          <h2>Archive</h2>
-          <p className="muted">Finished tasks keep their timeline and artifacts.</p>
-        </div>
-        {all.length > 0 && (
-          <label className="search">
-            <Search size={14} aria-hidden />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search titles, tags, workflows…"
-              aria-label="Search the archive"
-            />
-          </label>
-        )}
-      </div>
-      {tasks.isLoading && <p className="muted" role="status">Loading the archive…</p>}
-      {tasks.error && (
-        <p className="error" role="alert">
-          Could not load the archive: {tasks.error.message}{" "}
-          <button type="button" className="link-button" onClick={() => void tasks.refetch()}>
-            Try again
-          </button>
+    <Page
+      title="Archive"
+      actions={
+        all.length > 0 && <SearchInput value={search} onChange={setSearch} label="Search the archive" placeholder="Search titles, tags, workflows…" />
+      }
+    >
+      {tasks.isLoading && (
+        <p className="muted" role="status">
+          Loading the archive…
         </p>
+      )}
+      {tasks.error && (
+        <Callout tone="danger">
+          Could not load the archive: {tasks.error.message}{" "}
+          <Button variant="link" onClick={() => void tasks.refetch()}>
+            Try again
+          </Button>
+        </Callout>
       )}
       {/* Only a successful load is genuinely empty; a failed one must not read as "nothing archived". */}
       {tasks.isSuccess && all.length === 0 && (
-        <div className="empty-state">
-          <Archive size={22} />
-          <strong>Nothing archived yet</strong>
-          <span>Tasks land here when an archive action runs or you archive them from their Details tab.</span>
-        </div>
+        <EmptyState icon={Archive} title="Nothing archived yet">
+          Tasks land here when an archive action runs, or when you archive one from its header.
+        </EmptyState>
       )}
       {all.length > 0 && rows.length === 0 && (
-        <div className="empty-state">
-          <Search size={22} />
-          <strong>No archived task matches “{search.trim()}”</strong>
-        </div>
+        <EmptyState icon={Search} title={`No archived task matches “${search.trim()}”`} />
       )}
       {rows.length > 0 && (
         <div className="table-wrap">
@@ -79,8 +66,8 @@ export function ArchiveView({
             <thead>
               <tr>
                 <th>Task</th>
-                <th>Workflow</th>
-                <th>Last stage</th>
+                <th className="table-secondary">Workflow</th>
+                <th className="table-secondary">Last stage</th>
                 <th>Archived</th>
               </tr>
             </thead>
@@ -98,17 +85,17 @@ export function ArchiveView({
                   <td>
                     <div className="table-title">{task.title}</div>
                     {task.tags.length > 0 && (
-                      <div className="card-meta">
+                      <TagList>
                         {task.tags.map((tag) => (
-                          <span key={tag} className="chip chip-tag">
+                          <Tag key={tag} tone="accent">
                             {tag}
-                          </span>
+                          </Tag>
                         ))}
-                      </div>
+                      </TagList>
                     )}
                   </td>
-                  <td>{workflowOf(task)?.name ?? "—"}</td>
-                  <td>{stageOf(task)?.name ?? "—"}</td>
+                  <td className="table-secondary">{workflowOf(task)?.name ?? "—"}</td>
+                  <td className="table-secondary">{stageOf(task)?.name ?? "—"}</td>
                   <td title={task.archivedAt ? new Date(task.archivedAt).toLocaleString() : undefined}>
                     {task.archivedAt ? relativeTime(task.archivedAt) : "—"}
                   </td>
@@ -118,6 +105,6 @@ export function ArchiveView({
           </table>
         </div>
       )}
-    </div>
+    </Page>
   );
 }

@@ -5,7 +5,7 @@ import { useEffect } from "react";
 import { useApi } from "../api-context";
 import { agentLabel } from "../lib/agents";
 import { clockTime, cls } from "../lib/format";
-import { Menu } from "./Menu";
+import { Menu } from "../ui";
 
 /** A usage limit stops a task just as a failure does, so both are counted in one place. */
 const COUNTERS: { key: string; name: string; label: string; icon: LucideIcon; badges: TaskBadge[] }[] = [
@@ -57,16 +57,16 @@ export function StatusCounters({
         <Menu
           key={key}
           label={label}
-          align="left"
-          title={`${label}: ${list.length}`}
-          triggerLabel={`${label}: ${list.length}`}
-          triggerClassName={cls("counter", `counter-${key}`)}
+          // At the foot of the sidebar, so the list opens upwards.
+          side="top"
+          align="start"
+          width={300}
           trigger={
-            <>
-              <Icon size={14} className={cls(key === "running" && "spin")} />
+            <button type="button" className={cls("counter", `counter-${key}`)} aria-label={`${label}: ${list.length}`}>
+              <Icon size={14} className={cls(key === "running" && "spin")} aria-hidden="true" />
               <span className="counter-name">{name}</span>
               <span className="counter-count">{list.length}</span>
-            </>
+            </button>
           }
           items={list.map((task) => ({
             key: task.id,

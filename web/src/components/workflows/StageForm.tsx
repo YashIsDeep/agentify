@@ -1,15 +1,14 @@
 import type { AgentId, StageAgentDefaults } from "@wm/shared";
 import { AGENTS } from "../../lib/agents";
 import type { DraftStage } from "../../lib/draft";
+import { Field, FieldRow, FormStack } from "../../ui";
 import { EffortSelect, keepEffort, ModelSelect, modelsFor, useAgentModels } from "../ModelSelect";
 
 export function StageForm({
   stage,
-  taskCount,
   onChange,
 }: {
   stage: DraftStage;
-  taskCount: number;
   onChange: (patch: Partial<DraftStage>) => void;
 }) {
   const models = useAgentModels();
@@ -25,14 +24,12 @@ export function StageForm({
   };
 
   return (
-    <div className="form-grid wf-form">
-      <div className="field-row">
-        <label className="field field-grow">
-          <span>Name</span>
+    <FormStack>
+      <FieldRow>
+        <Field label="Name" grow>
           <input value={stage.name} onChange={(event) => onChange({ name: event.target.value })} />
-        </label>
-        <label className="field">
-          <span>WIP limit</span>
+        </Field>
+        <Field label="WIP limit" optional tip="A warning, shown on the board when more tasks than this are in the stage.">
           <input
             type="number"
             min={1}
@@ -40,19 +37,17 @@ export function StageForm({
             placeholder="None"
             onChange={(event) => onChange({ wipLimit: event.target.value === "" ? null : Number(event.target.value) })}
           />
-          <span className="hint">A warning only.</span>
-        </label>
-      </div>
+        </Field>
+      </FieldRow>
 
-      <div className="field">
-        <span>Coding agent defaults</span>
-        <div className="field-row">
-          <label className="field">
-            <span>Agent</span>
-            <select
-              value={defaults.agent ?? ""}
-              onChange={(event) => setDefaults({ agent: (event.target.value || null) as AgentId | null })}
-            >
+      <Field
+        label="Coding agent defaults"
+        group
+        tip="Used by this stage's coding agents that leave agent, model or effort blank. Read as each run starts."
+      >
+        <FieldRow>
+          <Field label="Agent">
+            <select value={defaults.agent ?? ""} onChange={(event) => setDefaults({ agent: (event.target.value || null) as AgentId | null })}>
               <option value="">None</option>
               {AGENTS.map((agent) => (
                 <option key={agent.id} value={agent.id}>
@@ -60,44 +55,25 @@ export function StageForm({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="field field-grow">
-            <span>Model</span>
+          </Field>
+          <Field label="Model" grow>
             <ModelSelect
               value={defaults.model ?? ""}
               agent={defaults.agent}
               blankLabel="Agent default"
               onChange={(value) => setDefaults({ model: value || null })}
             />
-          </label>
-          <label className="field">
-            <span>Effort</span>
+          </Field>
+          <Field label="Effort">
             <EffortSelect
               value={defaults.effort ?? ""}
               agent={defaults.agent}
               model={defaults.model}
               onChange={(value) => setDefaults({ effort: value || null })}
             />
-          </label>
-        </div>
-        <p className="hint">
-          Coding-agent actions in this stage use these for whatever they leave blank; the agent's own default (Agents page)
-          comes after. Read as each run starts, so edits apply to the next run.
-        </p>
-      </div>
-
-      <p className="hint">
-        A task entering this stage runs its actions top to bottom, one at a time. Add, open and reorder them on the stage's
-        editor. To sign off an agent's work, switch on <strong>Wait for my approval</strong> inside that coding agent; a
-        standalone <strong>Approval</strong> is for checkpoints that follow no agent.
-      </p>
-
-      {taskCount > 0 && (
-        <p className="hint">
-          {taskCount} active {taskCount === 1 ? "task is" : "tasks are"} in this stage. They keep the actions they entered
-          with, and this stage can't be deleted until they move on.
-        </p>
-      )}
-    </div>
+          </Field>
+        </FieldRow>
+      </Field>
+    </FormStack>
   );
 }

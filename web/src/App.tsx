@@ -8,9 +8,11 @@ import { ConnectionsView } from "./components/ConnectionsView";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TaskDrawer } from "./components/TaskDrawer";
+import { UiKitView } from "./components/UiKitView";
 import { WorkflowsView } from "./components/workflows/WorkflowsView";
 import { VIEWS, type View } from "./views";
 import { cls } from "./lib/format";
+import { Button, Splash } from "./ui";
 import { useQueryParam } from "./lib/url-state";
 import { useWorkspaceNavigation } from "./workspace-context";
 import { useLiveUpdates } from "./live";
@@ -29,16 +31,12 @@ export function App() {
   const openTask = useCallback((id: string) => setQueryParams({ task: id }), [setQueryParams]);
   const closeTask = useCallback(() => setQueryParams({ task: null }), [setQueryParams]);
 
-  if (workflows.isLoading) return <div className="splash">Loading…</div>;
+  if (workflows.isLoading) return <Splash title="Loading…" />;
   if (workflows.error) {
     return (
-      <div className="splash">
-        <strong>Could not reach the Workflow Manager server.</strong>
-        <span className="muted">{workflows.error.message}</span>
-        <button type="button" className="button" onClick={() => void workflows.refetch()}>
-          Try again
-        </button>
-      </div>
+      <Splash title="Could not reach the Workflow Manager server." action={<Button onClick={() => void workflows.refetch()}>Try again</Button>}>
+        {workflows.error.message}
+      </Splash>
     );
   }
 
@@ -67,6 +65,8 @@ export function App() {
           <WorkflowsView workflows={list} workflowId={workflow?.id} />
         ) : view === "connections" ? (
           <ConnectionsView />
+        ) : view === "ui-kit" ? (
+          <UiKitView />
         ) : workflow ? (
           <Board
             workflow={workflow}
@@ -75,11 +75,9 @@ export function App() {
             onNewTask={() => setCreating(true)}
           />
         ) : (
-          <div className="splash">
-            <strong>No workflows yet</strong>
-            <span className="muted">Create a workflow to start adding tasks in this workspace.</span>
-            <button type="button" className="button" onClick={() => setQueryParams({ view: "workflows" })}>Create workflow</button>
-          </div>
+          <Splash title="No workflows yet" action={<Button onClick={() => setQueryParams({ view: "workflows" })}>Create workflow</Button>}>
+            Create a workflow to start adding tasks in this workspace.
+          </Splash>
         )}
       </main>
       {taskId && <TaskDrawer key={taskId} taskId={taskId} workflows={list} onClose={closeTask} />}

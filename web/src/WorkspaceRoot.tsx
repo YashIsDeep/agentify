@@ -4,10 +4,9 @@ import { useState } from "react";
 import { createWorkspaceApi, workspaceApi } from "./api";
 import { ApiContext } from "./api-context";
 import { App } from "./App";
-import { Modal } from "./components/Modal";
-import { ToastProvider } from "./components/Toast";
 import { setQueryParams, useQueryParam } from "./lib/url-state";
 import { createQueryClient } from "./query-client";
+import { Button, Callout, Dialog, DialogBody, DialogFooter, Field, Splash, ToastProvider } from "./ui";
 import { WorkspaceContext, useWorkspace, useWorkspaceNavigation } from "./workspace-context";
 
 export function WorkspaceRoot() {
@@ -18,23 +17,19 @@ export function WorkspaceRoot() {
     refetchOnWindowFocus: true,
   });
   const workspaceId = useQueryParam("workspace") ?? "default";
-  if (catalog.isLoading) return <div className="splash">Loading workspace…</div>;
+  if (catalog.isLoading) return <Splash title="Loading workspace…" />;
   if (catalog.error) return (
-    <div className="splash">
-      <strong>Could not load workspaces.</strong>
-      <span className="muted">{catalog.error.message}</span>
-      <button type="button" className="button" onClick={() => void catalog.refetch()}>Try again</button>
-    </div>
+    <Splash title="Could not load workspaces." action={<Button onClick={() => void catalog.refetch()}>Try again</Button>}>
+      {catalog.error.message}
+    </Splash>
   );
   const list = catalog.data ?? [];
   const current = list.find((workspace) => workspace.id === workspaceId);
   if (!current) return (
-    <div className="splash">
-      <strong>Workspace not found.</strong>
-      <button type="button" className="button" onClick={() => setQueryParams({ workspace: null, workflow: null, view: null, task: null })}>
-        Back to My workspace
-      </button>
-    </div>
+    <Splash
+      title="Workspace not found."
+      action={<Button onClick={() => setQueryParams({ workspace: null, workflow: null, view: null, task: null })}>Back to My workspace</Button>}
+    />
   );
   return (
     <WorkspaceSession
@@ -103,29 +98,22 @@ function WorkspaceDialog({ action, onSaved, onClose }: {
   const close = () => { if (!save.isPending) onClose(); };
   const title = action === "clone" ? "Clone workspace" : action === "rename" ? "Rename workspace" : "New workspace";
   return (
-    <Modal title={title} onClose={close}>
-      <form onSubmit={(event) => { event.preventDefault(); if (name.trim() && !save.isPending) save.mutate(); }}>
-        <div className="modal-body form-grid">
-          <label className="field">
-            <span>Workspace name</span>
-            <input autoFocus required maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Product team" />
-          </label>
-          {action !== "rename" && (
-            <p className="hint">
-              {action === "clone"
-                ? `Copies workflows, agent settings, and saved connections (including credentials) from “${current.name}”. Tasks and archive start empty. Changes stay independent.`
-                : "Start with your own workflows, agent settings, connections, and archive."}
-            </p>
-          )}
-          {save.error && <p className="error" role="alert">{save.error.message}</p>}
-        </div>
-        <footer className="modal-footer">
-          <button type="button" className="button ghost" disabled={save.isPending} onClick={close}>Cancel</button>
-          <button type="submit" className="button primary" disabled={!name.trim() || save.isPending}>
-            {save.isPending ? "Saving…" : action === "clone" ? "Clone workspace" : action === "rename" ? "Save" : "Create workspace"}
-          </button>
-        </footer>
-      </form>
-    </Modal>
+    <Dialog title={title} onClose={close} onSubmit={() => name.trim() && !save.isPending && save.mutate()}>
+      <DialogBody>
+        <Field
+          label="Workspace name"
+          // Worth saying up front: a clone carries credentials along with it.
+          note={action === "clone" ? "Copies workflows, agent settings and connections, credentials included. Tasks aren't copied." : undefined}
+        >
+          <input autoFocus required maxLength={80} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Product team" />
+        </Field>
+        {save.error && <Callout tone="danger">{save.error.message}</Callout>}
+      </DialogBody>
+      <DialogFooter onCancel={close} busy={save.isPending}>
+        <Button type="submit" variant="primary" disabled={!name.trim()} loading={save.isPending} loadingText="Saving…">
+          {action === "clone" ? "Clone workspace" : action === "rename" ? "Save" : "Create workspace"}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

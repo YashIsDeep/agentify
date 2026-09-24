@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { TaskDetail } from "@wm/shared";
 import { useEffect, useState } from "react";
-import { useToast } from "./components/Toast";
+import { useToast } from "./ui";
 
 export function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());

@@ -13,10 +13,11 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { StageDef, TaskSummary, WorkflowDef } from "@wm/shared";
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApi } from "../api-context";
 import { useNow } from "../hooks";
-import { cls } from "../lib/format";
+import { cls, countOf } from "../lib/format";
+import { Button, Splash, Tag } from "../ui";
 import { MoveDialog } from "./MoveDialog";
 import { WorkflowIcon } from "./WorkflowIcon";
 import { StageActions } from "./StageActions";
@@ -41,6 +42,8 @@ export function Board({
   });
   const [dragging, setDragging] = useState<TaskSummary | null>(null);
   const [pendingMove, setPendingMove] = useState<{ task: TaskSummary; to: StageDef } | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const revealedFor = useRef<string | null>(null);
 
   const sensors = useSensors(
     // A small distance keeps plain clicks opening the task instead of starting a drag.
@@ -60,6 +63,21 @@ export function Board({
     return groups;
   }, [tasks.data]);
 
+  // Opening a wide board where every task sits in later stages would show only empty columns, so the
+  // first stage with work in it is brought into view — once per board, never while you're using it.
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board || !tasks.data || revealedFor.current === workflow.id) return;
+    revealedFor.current = workflow.id;
+    const first = workflow.stages.find((stage) => byStage.has(stage.id));
+    const column = first && board.querySelector<HTMLElement>(`[data-stage-id="${first.id}"]`);
+    if (!column) return;
+    const columnBox = column.getBoundingClientRect();
+    const boardBox = board.getBoundingClientRect();
+    // Lined up with the board's own left padding.
+    if (columnBox.right > boardBox.right) board.scrollLeft += columnBox.left - boardBox.left - 28;
+  }, [tasks.data, byStage, workflow]);
+
   const onDragStart = ({ active }: DragStartEvent) => {
     setDragging((active.data.current?.task as TaskSummary | undefined) ?? null);
   };
@@ -70,7 +88,13 @@ export function Board({
     if (task && to && to.id !== task.currentStageId) setPendingMove({ task, to });
   };
 
-  if (tasks.error) return <div className="board-message error">Could not load tasks: {tasks.error.message}</div>;
+  if (tasks.error) {
+    return (
+      <Splash title="Could not load tasks." action={<Button onClick={() => void tasks.refetch()}>Try again</Button>}>
+        {tasks.error.message}
+      </Splash>
+    );
+  }
 
   return (
     <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
@@ -80,16 +104,15 @@ export function Board({
           {/* A task always lands on a board, so this is the only page the action belongs on. */}
           <div className="board-heading-actions">
             <span className="board-task-count">
-              {tasks.isLoading ? "Loading…" : `${tasks.data?.length ?? 0} active tasks`}
+              {tasks.isLoading ? "Loading…" : countOf(tasks.data?.length ?? 0, "active task")}
             </span>
-            <button type="button" className="button primary" title="New task" aria-label="New task" onClick={onNewTask}>
-              <Plus size={15} />
+            <Button variant="primary" icon={Plus} aria-label="New task" onClick={onNewTask}>
               <span className="board-new-label">New task</span>
-            </button>
+            </Button>
           </div>
         </header>
         <div className="board-canvas">
-          <div className="board">
+          <div className="board" ref={boardRef}>
             {workflow.stages.map((stage) => (
               <Column
                 key={stage.id}
@@ -143,14 +166,14 @@ function Column({
   const overLimit = stage.wipLimit !== null && tasks.length > stage.wipLimit;
 
   return (
-    <section ref={setNodeRef} className={cls("column", isOver && "column-over")} aria-label={stage.name}>
+    <section ref={setNodeRef} className={cls("column", isOver && "column-over")} aria-label={stage.name} data-stage-id={stage.id}>
       <header className="column-header">
         <h3>{stage.name}</h3>
         <div className="column-header-actions">
-          <span className={cls("count", overLimit && "count-over")} title={overLimit ? "Over the WIP limit" : undefined}>
+          <Tag tone={overLimit ? "warn" : "neutral"} title={overLimit ? "Over the WIP limit" : undefined}>
             {tasks.length}
             {stage.wipLimit !== null && `/${stage.wipLimit}`}
-          </span>
+          </Tag>
           <StageActions stage={stage} stages={stages} />
         </div>
       </header>

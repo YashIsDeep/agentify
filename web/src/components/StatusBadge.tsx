@@ -1,6 +1,7 @@
 import type { BadgeDetail, RunStatus, TaskBadge } from "@wm/shared";
 import { Ban, CircleCheck, CircleX, Clock, Hand, Hourglass, LoaderCircle, SkipForward, TriangleAlert } from "lucide-react";
 import { clockTime } from "../lib/format";
+import { Badge, type Tone } from "../ui";
 
 const BADGE_LABELS: Record<TaskBadge, string> = {
   running: "Running",
@@ -12,22 +13,25 @@ const BADGE_LABELS: Record<TaskBadge, string> = {
   archived: "Archived",
 };
 
+const BADGE_TONES: Record<TaskBadge, Tone> = {
+  running: "accent",
+  quota: "info",
+  queued: "neutral",
+  failed: "danger",
+  "needs-you": "warn",
+  idle: "neutral",
+  archived: "neutral",
+};
+
 export function StatusBadge({ badge, detail }: { badge: TaskBadge; detail?: BadgeDetail | null }) {
   // A quota wait is only useful with its time: "Resets 2:40 AM".
   const resetAt = badge === "quota" ? detail?.resetAt : undefined;
+  const icon =
+    badge === "running" ? <LoaderCircle size={11} className="spin" aria-hidden="true" /> : badge === "needs-you" ? Hand : badge === "quota" ? Hourglass : undefined;
   return (
-    <span className={`badge badge-${badge}`} title={resetAt ? "Waiting for a usage limit to reset" : undefined}>
-      {badge === "running" ? (
-        <LoaderCircle size={11} className="spin" />
-      ) : badge === "needs-you" ? (
-        <Hand size={11} />
-      ) : badge === "quota" ? (
-        <Hourglass size={11} />
-      ) : (
-        <span className="badge-dot" />
-      )}
+    <Badge tone={BADGE_TONES[badge]} icon={icon} title={resetAt ? "Waiting for a usage limit to reset" : undefined}>
       {resetAt ? `Resets ${clockTime(resetAt)}` : badge === "needs-you" && detail?.reason === "approval" ? "Ready for review" : BADGE_LABELS[badge]}
-    </span>
+    </Badge>
   );
 }
 

@@ -1,4 +1,4 @@
-import { APPROVAL_ACTION, type RunView, type StageDef, type TaskDetail, type TaskSummary, type VisitView } from "@wm/shared";
+import { APPROVAL_ACTION, type RunView, type StageAgentDefaults, type StageDef, type TaskDetail, type TaskSummary, type VisitView } from "@wm/shared";
 import {
   Check,
   ChevronDown,
@@ -17,8 +17,9 @@ import {
 import { useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
-import { clockTime, cls, duration, usageSummary } from "../lib/format";
+import { clockTime, cls, runDuration, usageSummary } from "../lib/format";
 import { actionList, describeAgent, isActiveRun, isAgentRun, isApprovalRun, isAwaitingApproval, isRetryable, isSkippable } from "../lib/runs";
+import { Button, IconButton, Tag } from "../ui";
 import { RetryDialog, SendBackDialog } from "./dialogs";
 import { DiffPanel } from "./DiffPanel";
 import { RunLog } from "./RunLog";
@@ -26,6 +27,8 @@ import { RunStatusIcon, runStatusLabel } from "./StatusBadge";
 
 interface RunHandlers {
   task: TaskSummary;
+  /** Where a coding agent's model comes from when neither the action nor the task names one. */
+  stageDefaults: StageAgentDefaults;
   now: number;
   busy: boolean;
   stageName: (stageId: string) => string;
@@ -70,6 +73,7 @@ export function StagePanel({
 
   const handlers: RunHandlers = {
     task,
+    stageDefaults: stage.agentDefaults,
     now,
     busy: action.isPending,
     stageName,
@@ -90,12 +94,11 @@ export function StagePanel({
     <section className="stage-panel">
       <div className="section-heading">
         <h3>{stage.name}</h3>
-        {visit.attempt > 1 && <span className="chip">attempt {visit.attempt}</span>}
+        {visit.attempt > 1 && <Tag>attempt {visit.attempt}</Tag>}
         {visit.completedAt && (
-          <span className="chip chip-success">
-            <CircleCheck size={11} />
+          <Tag tone="success" icon={CircleCheck}>
             complete
-          </span>
+          </Tag>
         )}
       </div>
 
@@ -125,20 +128,13 @@ export function StagePanel({
             ))}
           </ol>
           <div className="action-bar">
-            <button
-              type="button"
-              className="button primary"
-              disabled={action.isPending}
-              onClick={() => action.mutate(() => api.startActions(task.id))}
-            >
-              <Play size={13} />
+            <Button variant="primary" icon={Play} loading={action.isPending} onClick={() => action.mutate(() => api.startActions(task.id))}>
               Start
-            </button>
-            <span className="muted small">Nothing has run in {stage.name} yet.</span>
+            </Button>
           </div>
         </>
       ) : (
-        <p className="muted small">{stage.name} has no actions; move the task on when you're ready.</p>
+        <p className="muted small">No actions in this stage.</p>
       )}
 
       {switchedOff.length > 0 && (
@@ -157,6 +153,7 @@ function RunItem({
   run,
   index,
   task,
+  stageDefaults,
   now,
   busy,
   stageName,
@@ -204,7 +201,7 @@ function RunItem({
             <span className="action-index">{index + 1}.</span> {run.label}
           </span>
           {isAgentRun(run) ? (
-            <span className="chip chip-agent">{describeAgent(run, task)}</span>
+            <Tag tone="accent">{describeAgent(run, task, stageDefaults)}</Tag>
           ) : (
             <span className="run-type">{run.actionType}</span>
           )}
@@ -215,67 +212,60 @@ function RunItem({
             : run.resumeAt
               ? `resets ${clockTime(run.resumeAt, now)}`
               : run.startedAt && !approval
-                ? duration(run.startedAt, run.endedAt, now)
+                ? runDuration(run, now)
                 : runStatusLabel(run.status)}
         </span>
         {run.status === "quota-wait" && (
-          <button type="button" className="button small" onClick={() => onResume(run)} disabled={busy} title="Try again before the reset time">
-            <Play size={12} />
+          <Button size="sm" icon={Play} onClick={() => onResume(run)} disabled={busy} title="Try again before the reset time">
             Try now
-          </button>
+          </Button>
         )}
         {isActiveRun(run) && !waitingForYou && run.status !== "waiting" && (
-          <button type="button" className="icon-button" title="Cancel" aria-label="Cancel" onClick={() => onCancel(run)} disabled={busy}>
-            <Square size={12} />
-          </button>
+          <IconButton label="Cancel" icon={Square} size="sm" onClick={() => onCancel(run)} disabled={busy} />
         )}
         {isRetryable(run) && (
-          <button type="button" className="button small" onClick={() => onRetry(run)} disabled={busy}>
-            <RotateCcw size={12} />
+          <Button size="sm" icon={RotateCcw} onClick={() => onRetry(run)} disabled={busy}>
             Retry
-          </button>
+          </Button>
         )}
         {isSkippable(run) && (
-          <button type="button" className="button small" onClick={() => onSkip(run)} disabled={busy} title="Carry on with the next action">
-            <SkipForward size={12} />
+          <Button size="sm" icon={SkipForward} onClick={() => onSkip(run)} disabled={busy} title="Carry on with the next action">
             Skip
-          </button>
+          </Button>
         )}
       </div>
       {waitingForYou && (
         <div className="approval">
           {instructions && <p className="approval-text">{instructions}</p>}
-          {chat && <p className="approval-text muted">Review the result and ask for revisions as often as you need. The workflow waits for your final approval.</p>}
           <DiffPanel task={task} />
           <div className="approval-buttons">
             {chat ? (
-              <button type="button" className="button small primary" onClick={() => onOpenChat(run)} disabled={busy}>
-                <MessagesSquare size={13} />
+              <Button size="sm" variant="primary" icon={MessagesSquare} onClick={() => onOpenChat(run)} disabled={busy}>
                 Review & revise
-              </button>
+              </Button>
             ) : (
-              <button type="button" className="button small primary" onClick={() => onApprove(run)} disabled={busy}>
-                <Check size={13} />
+              <Button size="sm" variant="primary" icon={Check} onClick={() => onApprove(run)} disabled={busy}>
                 Approve & continue
-              </button>
+              </Button>
             )}
             {sendBackTo && (
-              <button type="button" className="button small" onClick={() => onSendBack(run, sendBackTo)} disabled={busy}>
-                <Undo2 size={13} />
+              <Button size="sm" icon={Undo2} onClick={() => onSendBack(run, sendBackTo)} disabled={busy}>
                 Send back to {stageName(sendBackTo)}
-              </button>
+              </Button>
             )}
           </div>
         </div>
       )}
       {/* The question is answered in the chat; here it only has to be impossible to miss. */}
       {run.question && (
-        <button type="button" className="run-question" onClick={() => onOpenChat(run)}>
-          <MessageCircleQuestion size={14} />
+        <div className="run-question">
+          <MessageCircleQuestion size={14} aria-hidden="true" />
           The agent is waiting on you
           <span className="spacer" />
-          <span className="button small primary">Answer</span>
-        </button>
+          <Button size="sm" variant="primary" onClick={() => onOpenChat(run)}>
+            Answer
+          </Button>
+        </div>
       )}
       {/* The log already ends with the error, so only show it separately while the log is collapsed. */}
       {run.error && run.status !== "cancelled" && !(open && hasLog && !chat) && <div className="run-error">{run.error}</div>}

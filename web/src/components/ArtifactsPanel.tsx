@@ -5,6 +5,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useApi } from "../api-context";
 import { cls, fileSize, relativeTime } from "../lib/format";
+import { EmptyState } from "../ui";
 
 export function ArtifactsPanel({ taskId }: { taskId: string }) {
   const api = useApi();
@@ -24,11 +25,9 @@ export function ArtifactsPanel({ taskId }: { taskId: string }) {
   if (list.error) return <p className="error small panel-pad">{list.error.message}</p>;
   if (files.length === 0) {
     return (
-      <div className="empty-state">
-        <FileText size={22} />
-        <strong>No artifacts yet</strong>
-        <span>Actions write files like requirements.md here. Artifacts are kept after the task is archived.</span>
-      </div>
+      <EmptyState icon={FileText} title="No artifacts yet">
+        Actions write files like requirements.md here. Artifacts are kept after the task is archived.
+      </EmptyState>
     );
   }
 

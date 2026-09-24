@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { RunView, StageDef, TaskDetail, WorkflowDef } from "@wm/shared";
-import { Activity, FileText, FolderGit2, GitBranch, Link2, Settings2, X } from "lucide-react";
+import { Activity, Archive, FileText, Settings2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,25 +8,16 @@ import { ApiError } from "../api";
 import { useApi } from "../api-context";
 import { useNow, useTaskAction } from "../hooks";
 import { cls, relativeTime } from "../lib/format";
-import { linkTypeLabel } from "../lib/links";
+import { Button, IconButton, isDialogOpen, Splash, Tabs } from "../ui";
 import { ArtifactsPanel } from "./ArtifactsPanel";
-import { BrandIcon, hasBrandIcon } from "./BrandIcon";
 import { ChatModal } from "./ChatModal";
 import { DetailsPanel } from "./DetailsPanel";
-import { RetryDialog } from "./dialogs";
-import { isModalOpen } from "./Modal";
+import { ArchiveDialog, RetryDialog } from "./dialogs";
 import { MoveDialog } from "./MoveDialog";
 import { StagePanel } from "./StagePanel";
 import { StatusBadge } from "./StatusBadge";
+import { TaskMeta } from "./TaskMeta";
 import { Timeline } from "./Timeline";
-
-type Tab = "activity" | "artifacts" | "details";
-
-const TABS: { id: Tab; label: string; icon: typeof Activity }[] = [
-  { id: "activity", label: "Activity", icon: Activity },
-  { id: "artifacts", label: "Artifacts", icon: FileText },
-  { id: "details", label: "Details", icon: Settings2 },
-];
 
 export function TaskDrawer({
   taskId,
@@ -44,7 +35,8 @@ export function TaskDrawer({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !isModalOpen()) onClose();
+      // A menu, tooltip or dialog on top handles its own Escape (and marks it handled).
+      if (event.key === "Escape" && !event.defaultPrevented && !isDialogOpen()) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -52,18 +44,12 @@ export function TaskDrawer({
 
   return (
     <aside className="drawer" aria-label="Task details">
-      {query.isLoading && <div className="drawer-message">Loading…</div>}
+      {query.isLoading && <Splash title="Loading…" />}
       {query.error && (
-        <div className="drawer-message">
-          <p>
-            {query.error instanceof ApiError && query.error.status === 404
-              ? "This task no longer exists."
-              : query.error.message}
-          </p>
-          <button type="button" className="button" onClick={onClose}>
-            Close
-          </button>
-        </div>
+        <Splash
+          title={query.error instanceof ApiError && query.error.status === 404 ? "This task no longer exists." : query.error.message}
+          action={<Button onClick={onClose}>Close</Button>}
+        />
       )}
       {query.data && (
         <DrawerContent
@@ -88,17 +74,14 @@ function DrawerContent({
   now: number;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("activity");
-  // Details holds a form: keep it mounted once opened so switching tabs doesn't throw away edits.
-  const [detailsOpened, setDetailsOpened] = useState(false);
   const [moveTo, setMoveTo] = useState<StageDef | null>(null);
+  const [archiving, setArchiving] = useState(false);
   // The chat lives here, not in the stage panel, so runs from earlier stages open it too.
   const [chatRunId, setChatRunId] = useState<number | null>(null);
   const { task } = detail;
   const visit = detail.visits.find((v) => v.id === task.currentVisitId);
   const stage = workflow?.stages.find((s) => s.id === task.currentStageId);
   const archived = task.status === "archived";
-  const repoName = task.repoPath?.split(/[\\/]/).filter(Boolean).pop();
 
   return (
     <>
@@ -111,45 +94,11 @@ function DrawerContent({
             {visit && !archived && ` · entered ${relativeTime(visit.enteredAt, now)}`}
           </span>
           <span className="spacer" />
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close task">
-            <X size={16} />
-          </button>
+          {!archived && <IconButton label="Archive task" icon={Archive} onClick={() => setArchiving(true)} />}
+          <IconButton label="Close task" icon={X} onClick={onClose} />
         </div>
         <h2 className="drawer-title">{task.title}</h2>
-        {(repoName || task.branch || task.links.length > 0 || task.tags.length > 0) && (
-          <div className="card-meta">
-            {repoName && (
-              <span className="chip" title={task.repoPath ?? ""}>
-                <FolderGit2 size={11} />
-                {repoName}
-              </span>
-            )}
-            {task.branch && (
-              <span className="chip" title={task.worktreePath ?? ""}>
-                <GitBranch size={11} />
-                {task.branch}
-              </span>
-            )}
-            {task.links.map((link) =>
-              /^https?:\/\//.test(link.value) ? (
-                <a key={link.value} className="chip chip-link" href={link.value} target="_blank" rel="noreferrer">
-                  {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
-                  {linkTypeLabel(link.type)}
-                </a>
-              ) : (
-                <span key={link.value} className="chip" title={link.value}>
-                  {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
-                  {linkTypeLabel(link.type)}: {link.value}
-                </span>
-              ),
-            )}
-            {task.tags.map((tag) => (
-              <span key={tag} className="chip chip-tag">
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
+        <TaskMeta task={task} />
       </header>
 
       {workflow && (
@@ -191,38 +140,35 @@ function DrawerContent({
           />
         )}
 
-        <div className="subtabs" role="tablist">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={tab === id}
-              className={cls("subtab", tab === id && "subtab-active")}
-              onClick={() => {
-                setTab(id);
-                if (id === "details") setDetailsOpened(true);
-              }}
-            >
-              <Icon size={14} />
-              {label}
-            </button>
-          ))}
-        </div>
-        {tab === "activity" && <Timeline detail={detail} now={now} onOpenChat={(run) => setChatRunId(run.id)} />}
-        {tab === "artifacts" && <ArtifactsPanel taskId={task.id} />}
-        {detailsOpened && (
-          <div hidden={tab !== "details"}>
-            <DetailsPanel detail={detail} />
-          </div>
-        )}
+        <Tabs
+          label="Task"
+          tabs={[
+            {
+              value: "activity",
+              label: "Activity",
+              icon: Activity,
+              content: <Timeline detail={detail} now={now} onOpenChat={(run) => setChatRunId(run.id)} />,
+            },
+            { value: "artifacts", label: "Artifacts", icon: FileText, content: <ArtifactsPanel taskId={task.id} /> },
+            // Details holds a form: it stays mounted once opened, so looking at another tab keeps the edits.
+            { value: "details", label: "Details", icon: Settings2, content: <DetailsPanel detail={detail} />, keepMounted: true },
+          ]}
+        />
       </div>
 
       {moveTo && (
         <MoveDialog task={task} from={stage} to={moveTo} onClose={() => setMoveTo(null)} />
       )}
+      {archiving && <ArchiveDialog task={task} onClose={() => setArchiving(false)} />}
       {chatRunId !== null && (
-        <AgentChat detail={detail} runId={chatRunId} now={now} onSelect={setChatRunId} onClose={() => setChatRunId(null)} />
+        <AgentChat
+          detail={detail}
+          stages={workflow?.stages ?? []}
+          runId={chatRunId}
+          now={now}
+          onSelect={setChatRunId}
+          onClose={() => setChatRunId(null)}
+        />
       )}
     </>
   );
@@ -231,12 +177,14 @@ function DrawerContent({
 /** The chat modal plus the Retry dialog it can open. */
 function AgentChat({
   detail,
+  stages,
   runId,
   now,
   onSelect,
   onClose,
 }: {
   detail: TaskDetail;
+  stages: StageDef[];
   runId: number;
   now: number;
   onSelect: (runId: number) => void;
@@ -250,6 +198,7 @@ function AgentChat({
     <>
       <ChatModal
         detail={detail}
+        stages={stages}
         runId={runId}
         now={now}
         busy={action.isPending}

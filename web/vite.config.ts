@@ -14,5 +14,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     environment: "node",
+    // The design-system test reads stylesheets as ?raw text; without this Vitest hands back "".
+    css: { include: [/.+/] },
   },
 });

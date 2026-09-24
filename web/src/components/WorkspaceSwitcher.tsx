@@ -1,22 +1,20 @@
 import { ChevronDown, Copy, Pencil, Plus } from "lucide-react";
+import { Menu } from "../ui";
 import { useWorkspace } from "../workspace-context";
-import { Menu } from "./Menu";
 
 export function WorkspaceSwitcher() {
   const { current, list, select, manage } = useWorkspace();
   return (
     <Menu
       label="Workspaces"
-      title="Switch workspace"
-      triggerLabel={`Workspace: ${current.name}`}
-      align="left"
-      checkActive
-      triggerClassName="workspace-label workspace-switcher"
-      trigger={<>
-        <span className="workspace-avatar" aria-hidden="true">{current.name.slice(0, 1).toUpperCase()}</span>
-        <span className="workspace-name">{current.name}<small>Personal workspace</small></span>
-        <ChevronDown size={13} aria-hidden="true" />
-      </>}
+      align="start"
+      trigger={
+        <button type="button" className="workspace-switcher" aria-label={`Workspace: ${current.name}`}>
+          <span className="workspace-avatar" aria-hidden="true">{current.name.slice(0, 1).toUpperCase()}</span>
+          <span className="workspace-name">{current.name}</span>
+          <ChevronDown size={13} aria-hidden="true" />
+        </button>
+      }
       items={[
         ...list.map((workspace) => ({
           key: workspace.id,

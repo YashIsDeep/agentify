@@ -1,9 +1,7 @@
 import type { TaskSummary } from "@wm/shared";
-import { GitBranch, Link2 } from "lucide-react";
 import { age, cls } from "../lib/format";
-import { linkTypeLabel } from "../lib/links";
-import { BrandIcon, hasBrandIcon } from "./BrandIcon";
 import { StatusBadge } from "./StatusBadge";
+import { TaskMeta } from "./TaskMeta";
 
 export function TaskCardView({
   task,
@@ -42,27 +40,7 @@ export function TaskCardView({
           ))}
         </div>
       )}
-      {(task.branch || task.links.length > 0 || task.tags.length > 0) && (
-        <div className="card-meta">
-          {task.branch && (
-            <span className="chip" title={task.branch}>
-              <GitBranch size={11} />
-              {task.branch.replace(/^wm\//, "")}
-            </span>
-          )}
-          {task.links.map((link) => (
-            <span key={`${link.type}:${link.value}`} className="chip" title={link.value}>
-              {hasBrandIcon(link.type) ? <BrandIcon brand={link.type} size={11} /> : <Link2 size={11} />}
-              {linkTypeLabel(link.type)}
-            </span>
-          ))}
-          {task.tags.map((tag) => (
-            <span key={tag} className="chip chip-tag">
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
+      <TaskMeta task={task} compact />
     </div>
   );
 }

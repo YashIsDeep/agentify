@@ -1,52 +1,76 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConnectionInfo, ConnectionTestResult, ConnectionType, ConnectionTypeInfo } from "@wm/shared";
-import { Check, ExternalLink, KeyRound, Plug, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { ExternalLink, KeyRound, Plug, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "../api-context";
+import {
+  Button,
+  Callout,
+  Card,
+  CardGrid,
+  CardHeader,
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  EmptyState,
+  Field,
+  FormStack,
+  Page,
+  Tag,
+  useToast,
+} from "../ui";
 import { BrandIcon, hasBrandIcon } from "./BrandIcon";
-import { Modal } from "./Modal";
-import { useToast } from "./Toast";
+
+const typeIcon = (type: string, size: number) => (hasBrandIcon(type) ? <BrandIcon brand={type} size={size} /> : <Plug size={size} />);
 
 export function ConnectionsView() {
   const api = useApi();
   const types = useQuery({ queryKey: ["connection-types"], queryFn: api.connectionTypes, staleTime: Infinity });
   const connections = useQuery({ queryKey: ["connections"], queryFn: api.connections });
   const [adding, setAdding] = useState<ConnectionTypeInfo | null>(null);
+  const addButtons = (
+    <div className="conn-add">
+      {types.data?.map((type) => (
+        <Button key={type.type} icon={hasBrandIcon(type.type) ? <BrandIcon brand={type.type} size={14} /> : Plus} onClick={() => setAdding(type)}>
+          Add {type.label}
+        </Button>
+      ))}
+    </div>
+  );
 
   return (
-    <div className="page-view">
-      <div className="page-header">
-        <div>
-          <h2>Connections</h2>
-          <p className="muted">
-            Connections belong to this workspace. Clone the workspace to reuse them, including saved credentials.
-            Secret values are never shown after saving.
-          </p>
-        </div>
-      </div>
+    <Page
+      title="Connections"
+      tip="Accounts that workflow actions sign in to. They belong to this workspace, and secrets are never shown again once saved."
+      narrow
+    >
+      {connections.error && (
+        <Callout tone="danger">
+          Could not load connections: {connections.error.message}{" "}
+          <Button variant="link" onClick={() => void connections.refetch()}>
+            Try again
+          </Button>
+        </Callout>
+      )}
 
-      {connections.error && <p className="error">{connections.error.message}</p>}
-
-      <div className="agent-grid">
-        {connections.data?.map((connection) => {
-          const type = types.data?.find((candidate) => candidate.type === connection.type);
-          return type ? <ConnectionCard key={connection.id} connection={connection} type={type} /> : null;
-        })}
-      </div>
-
-      {connections.data?.length === 0 && <p className="muted">No connections yet.</p>}
-
-      <div className="conn-add">
-        {types.data?.map((type) => (
-          <button key={type.type} type="button" className="button" onClick={() => setAdding(type)}>
-            {hasBrandIcon(type.type) ? <BrandIcon brand={type.type} size={14} /> : <Plus size={14} />}
-            Add {type.label}
-          </button>
-        ))}
-      </div>
+      {connections.data?.length === 0 ? (
+        <EmptyState icon={Plug} title="No connections yet" action={addButtons}>
+          Add one to let actions move Jira issues, update Linear, or write to Notion.
+        </EmptyState>
+      ) : (
+        <>
+          <CardGrid>
+            {connections.data?.map((connection) => {
+              const type = types.data?.find((candidate) => candidate.type === connection.type);
+              return type ? <ConnectionCard key={connection.id} connection={connection} type={type} /> : null;
+            })}
+          </CardGrid>
+          {connections.data && addButtons}
+        </>
+      )}
 
       {adding && <NewConnectionDialog type={adding} onClose={() => setAdding(null)} />}
-    </div>
+    </Page>
   );
 }
 
@@ -73,25 +97,39 @@ function useConnectionForm(type: ConnectionTypeInfo, connection?: ConnectionInfo
   return { name, setName, values, set, changed, payload, touched, markSaved };
 }
 
+/** The name, then the fields the server declares for this type of connection. */
 function ConnectionFields({
   type,
   form,
   secretsSet,
+  autoFocus = false,
 }: {
   type: ConnectionTypeInfo;
   form: ReturnType<typeof useConnectionForm>;
   secretsSet: string[];
+  autoFocus?: boolean;
 }) {
   return (
     <>
+      <Field label="Name">
+        <input value={form.name} onChange={(event) => form.setName(event.target.value)} autoFocus={autoFocus} placeholder={`Work ${type.label}`} />
+      </Field>
       {type.fields.map((field) => {
         const saved = field.secret && secretsSet.includes(field.name);
         return (
-          <label className="field" key={field.name}>
-            <span>
-              {field.label}
-              {field.required ? "" : " (optional)"}
-            </span>
+          <Field
+            key={field.name}
+            label={field.label}
+            optional={!field.required}
+            tip={
+              (field.help || saved) && (
+                <>
+                  {field.help && <p>{field.help}</p>}
+                  {saved && <p>Leave blank to keep the saved value.</p>}
+                </>
+              )
+            }
+          >
             <input
               type={field.secret ? "password" : "text"}
               autoComplete="off"
@@ -99,9 +137,7 @@ function ConnectionFields({
               placeholder={saved && !form.changed(field.name) ? "•••••••• saved" : field.placeholder}
               onChange={(event) => form.set(field.name, event.target.value)}
             />
-            {field.help && <span className="hint">{field.help}</span>}
-            {saved && !form.changed(field.name) && <span className="hint">Leave blank to keep the saved value.</span>}
-          </label>
+          </Field>
         );
       })}
     </>
@@ -152,87 +188,65 @@ function ConnectionCard({ connection, type }: { connection: ConnectionInfo; type
   const unsaved = form.touched.size > 0 || form.name !== connection.name;
 
   return (
-    <section className="agent-card">
-      <header className="agent-card-header">
-        {hasBrandIcon(type.type) ? <BrandIcon brand={type.type} size={18} /> : <Plug size={18} />}
-        <h3>{connection.name}</h3>
-        <span className="pill pill-muted">{type.label}</span>
-      </header>
+    <Card>
+      <CardHeader brand={type.type} icon={typeIcon(type.type, 20)} title={connection.name} aside={<Tag>{type.label}</Tag>} />
 
       <form
-        className="form-grid"
         onSubmit={(event) => {
           event.preventDefault();
           save.mutate();
         }}
       >
-        <label className="field">
-          <span>Name</span>
-          <input value={form.name} onChange={(event) => form.setName(event.target.value)} />
-        </label>
-        <ConnectionFields type={type} form={form} secretsSet={connection.secretsSet} />
-
-        {missing.length > 0 && (
-          <div className="callout callout-danger">
-            <TriangleAlert size={14} />
-            {/* Labels are already cased for display ("API token"), so use them verbatim. */}
-            <span>Still needs {missing.map((field) => field.label).join(" and ")}.</span>
+        <FormStack>
+          <ConnectionFields type={type} form={form} secretsSet={connection.secretsSet} />
+          {/* Labels are already cased for display ("API token"), so use them verbatim. */}
+          {missing.length > 0 && <Callout tone="danger">Still needs {missing.map((field) => field.label).join(" and ")}.</Callout>}
+          <div className="agent-row">
+            <Button type="submit" variant="primary" disabled={!unsaved || !form.name.trim()} loading={save.isPending} loadingText="Saving…">
+              Save
+            </Button>
+            <Button
+              icon={KeyRound}
+              loading={test.isPending}
+              loadingText="Testing…"
+              // Test signs in with what is stored, not with what is typed here.
+              title={unsaved ? "Tests the saved credentials. Save first to test your changes." : "Sign in with the saved credentials"}
+              onClick={() => test.mutate()}
+            >
+              Test
+            </Button>
+            <span className="spacer" />
+            <Button variant="danger" icon={Trash2} onClick={() => setDeleting(true)}>
+              Delete
+            </Button>
           </div>
-        )}
-
-        <div className="agent-row">
-          <button type="submit" className="button primary" disabled={save.isPending || !unsaved || !form.name.trim()}>
-            Save
-          </button>
-          <button type="button" className="button" disabled={test.isPending} onClick={() => test.mutate()}>
-            <KeyRound size={14} />
-            {test.isPending ? "Testing…" : "Test"}
-          </button>
-          <span className="spacer" />
-          <button type="button" className="button danger ghost" onClick={() => setDeleting(true)}>
-            <Trash2 size={14} />
-            Delete
-          </button>
-        </div>
-        {/* Test authenticates with what is stored, not with what is typed here. */}
-        {unsaved && <p className="hint">Test uses the saved credentials. Save first to test your changes.</p>}
+        </FormStack>
       </form>
 
       {result &&
         (result.ok ? (
-          <div className="callout callout-success">
-            <Check size={14} />
-            <span>
-              Authenticated as {result.detail} in {(result.durationMs / 1000).toFixed(1)}s
-            </span>
-          </div>
+          <Callout tone="success">
+            Authenticated as {result.detail} in {(result.durationMs / 1000).toFixed(1)}s
+          </Callout>
         ) : (
-          <div className="callout callout-danger">
-            <TriangleAlert size={14} />
-            <span>{result.error}</span>
-          </div>
+          <Callout tone="danger">{result.error}</Callout>
         ))}
 
       {deleting && (
-        <Modal title="Delete connection" onClose={() => setDeleting(false)}>
-          <div className="modal-body">
-            <p className="dialog-lead">{connection.name}</p>
+        <Dialog title="Delete connection" onClose={() => setDeleting(false)}>
+          <DialogBody lead={connection.name}>
             <p className="muted small">
-              Actions using it will fail until you pick another one. The credential is removed from{" "}
-              <code>secrets.json</code>.
+              Actions using it will fail until you pick another one. The credential is removed from <code>secrets.json</code>.
             </p>
-          </div>
-          <footer className="modal-footer">
-            <button type="button" className="button ghost" onClick={() => setDeleting(false)}>
-              Cancel
-            </button>
-            <button type="button" className="button danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
-              Delete
-            </button>
-          </footer>
-        </Modal>
+          </DialogBody>
+          <DialogFooter onCancel={() => setDeleting(false)} busy={remove.isPending}>
+            <Button variant="danger" loading={remove.isPending} loadingText="Deleting…" onClick={() => remove.mutate()}>
+              Delete connection
+            </Button>
+          </DialogFooter>
+        </Dialog>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -241,7 +255,6 @@ function NewConnectionDialog({ type, onClose }: { type: ConnectionTypeInfo; onCl
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useConnectionForm(type);
-  const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
     mutationFn: () => api.createConnection({ name: form.name, type: type.type as ConnectionType, values: form.payload() }),
@@ -250,39 +263,23 @@ function NewConnectionDialog({ type, onClose }: { type: ConnectionTypeInfo; onCl
       toast(`Added “${created.name}”`);
       onClose();
     },
-    onError: (err) => setError(err.message),
   });
 
   return (
-    <Modal title={`Add ${type.label} connection`} onClose={onClose}>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          create.mutate();
-        }}
-      >
-        <div className="modal-body form-grid">
-          <p className="muted small">{type.description}</p>
-          <label className="field">
-            <span>Name</span>
-            <input value={form.name} onChange={(event) => form.setName(event.target.value)} autoFocus placeholder="Work Jira" />
-          </label>
-          <ConnectionFields type={type} form={form} secretsSet={[]} />
-          <a className="hint link-row" href={type.docsUrl} target="_blank" rel="noreferrer noopener">
-            Where to create this credential
-            <ExternalLink size={12} />
-          </a>
-          {error && <div className="callout callout-danger">{error}</div>}
-        </div>
-        <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="button primary" disabled={!form.name.trim() || create.isPending}>
-            Add
-          </button>
-        </footer>
-      </form>
-    </Modal>
+    <Dialog title={`Add ${type.label} connection`} onClose={onClose} onSubmit={() => create.mutate()}>
+      <DialogBody>
+        <ConnectionFields type={type} form={form} secretsSet={[]} autoFocus />
+        <a className="conn-docs" href={type.docsUrl} target="_blank" rel="noreferrer noopener">
+          Where to create this credential
+          <ExternalLink size={12} aria-hidden="true" />
+        </a>
+        {create.error && <Callout tone="danger">{create.error.message}</Callout>}
+      </DialogBody>
+      <DialogFooter onCancel={onClose} busy={create.isPending}>
+        <Button type="submit" variant="primary" disabled={!form.name.trim()} loading={create.isPending} loadingText="Adding…">
+          Add connection
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

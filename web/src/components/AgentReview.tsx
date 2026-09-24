@@ -1,15 +1,18 @@
-import type { RunView, TaskDetail } from "@wm/shared";
-import { Check, Hand, Send } from "lucide-react";
+import type { RunView, StageDef, TaskDetail } from "@wm/shared";
+import { Check, Hand, Send, Undo2 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
 import { actionList, isAwaitingApproval } from "../lib/runs";
+import { Button, Field, Tag } from "../ui";
+import { SendBackDialog } from "./dialogs";
 import { DiffPanel } from "./DiffPanel";
 
 /** Stays visible below the transcript throughout the draft → revise → review loop. */
-export function AgentReview({ run, detail }: { run: RunView; detail: TaskDetail }) {
+export function AgentReview({ run, detail, stages }: { run: RunView; detail: TaskDetail; stages: StageDef[] }) {
   const api = useApi();
   const action = useTaskAction();
+  const [sendingBack, setSendingBack] = useState(false);
   // Scoped to both workspace and run; closing a chat or switching tasks keeps unsent feedback.
   const draftKey = `agent-review:${api.eventsUrl}:${run.id}`;
   const [note, setNote] = useState(() => {
@@ -30,6 +33,8 @@ export function AgentReview({ run, detail }: { run: RunView; detail: TaskDetail 
   const instructions = typeof run.outputs?.instructions === "string" ? run.outputs.instructions : "";
   const working = run.status === "running" || run.status === "queued" || run.status === "quota-wait";
   const approved = run.status === "succeeded" && run.outputs?.decision === "approved";
+  const sendBackTo = typeof config.sendBackTo === "string" && config.sendBackTo ? config.sendBackTo : null;
+  const sendBackName = sendBackTo ? (stages.find((stage) => stage.id === sendBackTo)?.name ?? "another stage") : null;
   if (run.visitId !== detail.task.currentVisitId && !approved) return null;
 
   if (approved) return <div className="agent-review-status" role="status"><Check size={15} /> Approved. The workflow can continue.</div>;
@@ -58,43 +63,56 @@ export function AgentReview({ run, detail }: { run: RunView; detail: TaskDetail 
   };
 
   return (
-    <form className="approval-card agent-review" onSubmit={send} aria-label="Review agent work">
-      <header className="approval-card-head" aria-live="polite">
-        <Hand size={15} />
-        <strong>{ready ? "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
-        <span className="spacer" />
-        <span className="chip">{revisions ? `Revision ${revisions}` : "First draft"}</span>
-      </header>
-      <p className="approval-text muted">
-        {ready ? "Request as many revisions as you need. Each result comes back here for your review." : "You can draft feedback while the agent works. Send it once the result is ready for review."}
-      </p>
-      {ready && instructions && <p className="approval-text agent-review-instructions">{instructions}</p>}
-      {ready && <DiffPanel task={detail.task} />}
-      <label className="agent-review-label" htmlFor={`revision-${run.id}`}>What would you like changed?</label>
-      <textarea
-        id={`revision-${run.id}`}
-        rows={2}
-        value={note}
-        maxLength={10_000}
-        disabled={action.isPending}
-        placeholder="Describe your revision…"
-        onChange={(event) => updateNote(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") send(event);
-        }}
-      />
-      <div className="approval-card-actions">
-        <button type="submit" className="button small primary" disabled={!ready || action.isPending || !note.trim()}>
-          <Send size={13} /> Request revision
-        </button>
-        <span className="spacer" />
-        <button type="button" className="button small" disabled={!ready || action.isPending || !!note.trim()} onClick={approve}>
-          <Check size={13} /> Approve & continue
-        </button>
-      </div>
-      <p className="approval-text muted small">
-        {note.trim() ? "Send or clear your feedback before approving." : next ? `Approval starts “${next.label}”.` : "Approval completes this action."}
-      </p>
-    </form>
+    <>
+      <form className="approval-card agent-review" onSubmit={send} aria-label="Review agent work">
+        <header className="approval-card-head" aria-live="polite">
+          <Hand size={15} />
+          <strong>{ready ? "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
+          <span className="spacer" />
+          <Tag>{revisions ? `Revision ${revisions}` : "First draft"}</Tag>
+        </header>
+        {/* While the agent works or asks, its question is the one thing to answer; a draft waits here. */}
+        {ready && (
+          <>
+            {instructions && <p className="approval-text agent-review-instructions">{instructions}</p>}
+            <DiffPanel task={detail.task} />
+            <Field label="What would you like changed?" tip="Ctrl+Enter (⌘+Enter on a Mac) sends it.">
+              <textarea
+                rows={2}
+                value={note}
+                maxLength={10_000}
+                disabled={action.isPending}
+                placeholder="Describe your revision…"
+                onChange={(event) => updateNote(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") send(event);
+                }}
+              />
+            </Field>
+            <div className="approval-card-actions">
+              <Button type="submit" size="sm" variant="primary" icon={Send} disabled={!note.trim()} loading={action.isPending}>
+                Request revision
+              </Button>
+              <span className="spacer" />
+              {sendBackName && (
+                <Button size="sm" icon={Undo2} disabled={action.isPending} onClick={() => setSendingBack(true)}>
+                  Send back to {sendBackName}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                icon={Check}
+                disabled={action.isPending || !!note.trim()}
+                title={note.trim() ? "Send or clear your feedback before approving" : next ? `Approving starts “${next.label}”` : "Approving completes this action"}
+                onClick={approve}
+              >
+                Approve & continue
+              </Button>
+            </div>
+          </>
+        )}
+      </form>
+      {sendingBack && sendBackName && <SendBackDialog run={run} stageName={sendBackName} onClose={() => setSendingBack(false)} />}
+    </>
   );
 }
