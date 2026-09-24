@@ -568,7 +568,7 @@ export class Engine {
       }
       const updated = this.db
         .update(s.actionRuns)
-        .set({ status: "queued", followUp: note, endedAt: null, error: null })
+        .set({ status: "queued", followUp: note, endedAt: null, error: null, usage: bankRoundTime(run) })
         .where(eq(s.actionRuns.id, run.id))
         .returning()
         .get();
@@ -700,7 +700,7 @@ export class Engine {
             endedAt: now,
             outputs: gated ? { ...outputs, instructions: this.renderInstructions(run) } : outputs,
             sessionId: result.sessionId ?? null,
-            usage: result.usage ?? null,
+            usage: addUsage(run.usage, result.usage),
             followUp: null,
           })
           .where(eq(s.actionRuns.id, run.id))
@@ -728,7 +728,7 @@ export class Engine {
             // A run parked before it could start keeps what its earlier attempt recorded.
             outputs: result.outputs ?? run.outputs,
             sessionId: result.sessionId ?? run.sessionId,
-            usage: result.usage ?? run.usage,
+            usage: addUsage(run.usage, result.usage),
           })
           .where(eq(s.actionRuns.id, run.id))
           .run();
@@ -748,7 +748,7 @@ export class Engine {
             error: result.error,
             outputs: result.outputs ?? null,
             sessionId: result.sessionId ?? null,
-            usage: result.usage ?? null,
+            usage: addUsage(run.usage, result.usage),
             followUp: null,
           })
           .where(eq(s.actionRuns.id, run.id))
@@ -1040,7 +1040,7 @@ export class Engine {
   private requeueQuotaRun(run: RunRow, message: string): RunRow {
     const updated = this.db
       .update(s.actionRuns)
-      .set({ status: "queued", resumeAt: null, endedAt: null, error: null })
+      .set({ status: "queued", resumeAt: null, endedAt: null, error: null, usage: bankRoundTime(run) })
       .where(eq(s.actionRuns.id, run.id))
       .returning()
       .get();
@@ -1180,4 +1180,30 @@ function dedupe(events: InternalEvent[]): InternalEvent[] {
     seen.add(key);
     return true;
   });
+}
+
+const USAGE_COUNTS = ["inputTokens", "cachedInputTokens", "outputTokens", "costUsd"] as const;
+type Usage = Record<string, unknown> | null;
+
+/**
+ * A run asked for changes, or parked on a usage limit, goes round again on the same row; each round
+ * reports only what it used, so the rounds are added up rather than the last one standing in for all.
+ */
+export function addUsage(previous: Usage, round: Usage | undefined): Usage {
+  if (!round) return previous;
+  if (!previous) return round;
+  const total: Record<string, unknown> = { ...previous, ...round };
+  for (const key of USAGE_COUNTS) {
+    const a = previous[key];
+    const b = round[key];
+    if (typeof a === "number" || typeof b === "number") total[key] = (typeof a === "number" ? a : 0) + (typeof b === "number" ? b : 0);
+  }
+  return total;
+}
+
+/** Before a run goes round again: its time so far is kept as `priorMs`, since `startedAt` restarts. */
+function bankRoundTime(run: RunRow): Usage {
+  if (!run.startedAt || !run.endedAt) return run.usage;
+  const prior = typeof run.usage?.priorMs === "number" ? run.usage.priorMs : 0;
+  return { ...(run.usage ?? {}), priorMs: prior + Math.max(0, run.endedAt - run.startedAt) };
 }

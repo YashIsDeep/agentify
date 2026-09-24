@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addUsage } from "../src/engine/engine";
 import { approval } from "../src/seed/workflows";
 import { createHarness, type Harness, inspect, removeDir, waitFor } from "./helpers";
 import { releaseGate, resetTestActions } from "./test-actions";
@@ -317,5 +318,16 @@ describe("engine", () => {
     expect(q.detail(task.id).timeline.some((event) => event.type === "run.interrupted")).toBe(true);
     expect(q.latest(gated.id, "gate")?.status).toBe("awaiting-approval");
     expect(q.detail(gated.id).task.badge).toBe("needs-you");
+  });
+});
+
+describe("addUsage", () => {
+  it("adds a round's tokens and cost to the earlier rounds', keeping the time they took", () => {
+    const first = { inputTokens: 100, cachedInputTokens: 80, outputTokens: 10, costUsd: 0.25, estimated: true, priorMs: 60_000 };
+    expect(addUsage(first, { inputTokens: 30, outputTokens: 5, costUsd: 0.03, estimated: true })).toEqual({
+      inputTokens: 130, cachedInputTokens: 80, outputTokens: 15, costUsd: 0.28, estimated: true, priorMs: 60_000,
+    });
+    expect(addUsage(null, { outputTokens: 5 })).toEqual({ outputTokens: 5 });
+    expect(addUsage(first, undefined)).toBe(first);
   });
 });
