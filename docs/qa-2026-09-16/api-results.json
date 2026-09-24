@@ -1,0 +1,90 @@
+{
+  "results": [
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "status": 200,
+      "expected": 200,
+      "pass": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "status": 403,
+      "expected": 403,
+      "pass": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "status": 403,
+      "expected": 403,
+      "pass": true
+    },
+    {
+      "path": "/api/tasks",
+      "method": "POST",
+      "status": 400,
+      "expected": 400,
+      "pass": true
+    },
+    {
+      "path": "/api/tasks/unknown-qa-id",
+      "method": "GET",
+      "status": 404,
+      "expected": 404,
+      "pass": true
+    },
+    {
+      "path": "/api/tasks/fdc668d9-e376-42c6-b6c2-bc95bfacbda1/artifact?name=qa-result.md",
+      "method": "GET",
+      "status": 200,
+      "expected": 200,
+      "pass": true
+    },
+    {
+      "path": "/api/tasks/fdc668d9-e376-42c6-b6c2-bc95bfacbda1/artifact?name=..%2F..%2Fsecrets.json",
+      "method": "GET",
+      "status": 400,
+      "expected": 400,
+      "pass": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "POST",
+      "status": 201,
+      "expected": 201,
+      "pass": true
+    },
+    {
+      "path": "/api/workflows/60d9ae84-f7fb-4aae-9470-21a794545020",
+      "method": "PUT",
+      "status": 200,
+      "expected": 200,
+      "pass": true
+    },
+    {
+      "path": "/api/tasks",
+      "method": "POST",
+      "status": 201,
+      "expected": 201,
+      "pass": true
+    }
+  ],
+  "workflowId": "60d9ae84-f7fb-4aae-9470-21a794545020",
+  "taskId": "95572051-7a9b-456b-be1a-6f80f7449a1a",
+  "stages": [
+    {
+      "id": "f4a359fa-6d0c-4ff1-a008-81d8c57d24ad",
+      "name": "Ready"
+    },
+    {
+      "id": "62fcaa67-6583-4ff5-bac9-b2a615c50e5a",
+      "name": "Fail"
+    },
+    {
+      "id": "2efb1378-2b3d-4705-922b-b78385c8e45e",
+      "name": "Cancel"
+    }
+  ]
+}
