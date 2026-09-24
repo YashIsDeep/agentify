@@ -287,7 +287,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
         if (!result.text.trim()) throw new ActionError("The agent finished without a final message to save", details);
         const file = resolveInside(artifactDir, config.saveResultAs);
         await mkdir(dirname(file), { recursive: true });
-        await writeFile(file, result.text, "utf8");
+        await writeFile(file, withoutPreamble(result.text), "utf8");
         outputs.artifact = config.saveResultAs;
         log(`Saved the final message to ${config.saveResultAs}`);
       }
@@ -345,6 +345,21 @@ function eventLogger(log: RunLog) {
         break;
     }
   };
+}
+
+/**
+ * Agents asked for "only a Markdown document" still tend to open with a line of chat ("Here's the
+ * plan."), which would then head the artifact. When the document starts with a heading a line or two
+ * in, that lead-in is dropped; anything longer is kept, since it may be content.
+ */
+export function withoutPreamble(text: string): string {
+  const heading = /^#{1,6}\s/m.exec(text);
+  if (!heading || heading.index === 0) return text;
+  const lead = text.slice(0, heading.index).trim();
+  const lines = lead.split("\n").filter((line) => line.trim());
+  // Lists, quotes, tables and code are content, not chat.
+  if (lines.length > 2 || lead.length > 300 || /^\s*([-*+>|]|\d+\.|```)/m.test(lead)) return text;
+  return text.slice(heading.index);
 }
 
 export function usageSummary(usage: AgentUsage | null): string | undefined {

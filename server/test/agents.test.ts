@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { selectAgent, usageSummary } from "../src/actions/coding-agent";
+import { selectAgent, usageSummary, withoutPreamble } from "../src/actions/coding-agent";
 import { claudeAdapter } from "../src/agents/claude";
 import { codexAdapter, parseModelCatalog } from "../src/agents/codex";
 import { cursorAdapter, parseCursorModels } from "../src/agents/cursor";
@@ -432,5 +432,16 @@ describe("agent selection and environment", () => {
   it("summarises usage", () => {
     expect(usageSummary({ inputTokens: 12345, outputTokens: 450, costUsd: 0.034, estimated: true })).toBe("12.3k in · 450 out · $0.03 est.");
     expect(usageSummary(null)).toBeUndefined();
+  });
+
+  it("drops a line of chat before a saved document's first heading, and nothing else", () => {
+    expect(withoutPreamble("I have everything needed. Here's the plan.\n\n## Goal\nShip it")).toBe("## Goal\nShip it");
+    expect(withoutPreamble("## Goal\nShip it")).toBe("## Goal\nShip it");
+    expect(withoutPreamble("No headings at all.")).toBe("No headings at all.");
+    // Anything that looks like content stays.
+    const listed = "- keep this point\n\n## Goal\nShip it";
+    expect(withoutPreamble(listed)).toBe(listed);
+    const long = "One.\nTwo.\nThree.\n\n## Goal";
+    expect(withoutPreamble(long)).toBe(long);
   });
 });
