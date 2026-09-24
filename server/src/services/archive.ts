@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { EngineError, type Engine } from "../engine/engine";
 import { git } from "../lib/git";
+import { removeWorktreeLeftovers } from "../lib/worktree";
 import { type Paths, purgeTranscripts } from "../paths";
 
 export interface ArchiveOptions {
@@ -30,8 +31,20 @@ export async function archiveTask(engine: Engine, paths: Paths, taskId: string, 
       );
     }
     worktreeRemoved = true;
+    await clearLeftovers(task.worktreePath);
   }
 
   engine.markArchived(taskId, { initiatedByRunId: options.initiatedByRunId, worktreeRemoved });
   if (options.initiatedByRunId === undefined) await purgeTranscripts(paths, taskId);
+}
+
+/** The worktree is already gone as far as git is concerned, so what's left must not fail the archive. */
+export async function clearLeftovers(worktreePath: string): Promise<void> {
+  try {
+    if (!(await removeWorktreeLeftovers(worktreePath))) {
+      console.warn(`Left files behind in ${worktreePath} after removing its worktree`);
+    }
+  } catch (err) {
+    console.warn(`Could not clear ${worktreePath} after removing its worktree:`, err);
+  }
 }

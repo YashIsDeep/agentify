@@ -125,6 +125,27 @@ describe("worktrees", () => {
     expect(readFileSync(join(repo, ".env"), "utf8")).toBe("TOKEN=local\n");
   });
 
+  it("archiving removes the worktree folder with its carried-over links, leaving their targets alone", async () => {
+    writeFileSync(join(repo, ".gitignore"), "node_modules/\n");
+    gitIn(repo, "add", ".gitignore");
+    gitIn(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore");
+    mkdirSync(join(repo, "client", "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(repo, "client", "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+
+    const q = inspect(h);
+    const workflowId = codeWorkflow({ carryOver: "client/node_modules" });
+    const task = h.engine.createTask({ workflowId, title: "Linked", repoPath: repo });
+    const hack = await waitFor(() => (q.latest(task.id, "hack")?.status === "awaiting-approval" ? q.latest(task.id, "hack") : undefined));
+    const { worktreePath } = h.engine.getTask(task.id);
+    expect(lstatSync(join(worktreePath!, "client", "node_modules")).isSymbolicLink()).toBe(true);
+
+    h.engine.approveRun(hack.id);
+    await waitFor(() => h.engine.getTask(task.id).status === "archived");
+    // git alone leaves client/node_modules behind as a live link to the repository's copy.
+    expect(existsSync(worktreePath!)).toBe(false);
+    expect(readFileSync(join(repo, "client", "node_modules", "dep", "index.js"), "utf8")).toBe("module.exports = 1;\n");
+  });
+
   it("refuses to carry over a path that leaves the repository", async () => {
     const q = inspect(h);
     const workflowId = codeWorkflow({ carryOver: "../secrets" });

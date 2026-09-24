@@ -23,6 +23,7 @@ import * as s from "../db/schema";
 import { EngineError, type Engine } from "../engine/engine";
 import { git } from "../lib/git";
 import { type Paths, purgeTaskDir } from "../paths";
+import { clearLeftovers } from "./archive";
 import type { ConnectionService } from "./connections";
 
 type StageInput = z.output<typeof saveWorkflowSchema>["stages"][number];
@@ -334,6 +335,7 @@ async function removeWorktree(task: s.TaskRow): Promise<void> {
   if (!task.repoPath || !task.worktreePath || !existsSync(task.worktreePath)) return;
   try {
     await git(["worktree", "remove", "--force", task.worktreePath], { cwd: task.repoPath });
+    await clearLeftovers(task.worktreePath);
   } catch (err) {
     console.warn(`Could not remove the worktree of deleted task ${task.id}:`, err);
   }
