@@ -1,0 +1,151 @@
+/*
+ * Design tokens: the only place raw values live. Components and pages use these variables, never a
+ * hex colour or an off-scale size of their own (a test in design-system.test.ts checks). Every colour
+ * has a light and a dark value; the theme switcher writes data-theme on <html>, and index.html does
+ * the same before first paint.
+ */
+
+:root {
+  /* Type scale. Six sizes and nothing between them. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 22px;
+
+  /* Spacing on a 4px grid. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Corners: controls, panels, overlays, and anything round. */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* Control heights, so buttons, inputs and selects on one row line up. */
+  --control-sm: 26px;
+  --control-md: 32px;
+
+  --font: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Inter Variable", Inter, "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Surfaces, from the page up. */
+  --bg: #f8fafb;
+  --surface: #ffffff;
+  --surface-2: #f1f4f5;
+  --surface-3: #e6ebed;
+  --glass: rgb(255 255 255 / 72%);
+  --column-bg: #f0f3f5;
+  --border: #e4e9ec;
+  --border-strong: #cdd6db;
+  --scrim: rgb(8 9 18 / 42%);
+
+  /* Text, from most to least prominent. */
+  --text: #202f38;
+  --text-2: #53646e;
+  --text-3: #647580;
+
+  /* Accent and status colours, each with a soft background to sit on. */
+  --accent: #168576;
+  --accent-soft: #e4f2ef;
+  --accent-text: #116e62;
+  --on-accent: #ffffff;
+  /* Filled accent surfaces (the primary button, the current step): one deep teal in both themes,
+     so white text on it always reads. */
+  --primary: #168576;
+  --success: #14995f;
+  --success-soft: #e2f5ec;
+  --warn: #b0680a;
+  --warn-soft: #fdf1dc;
+  --danger: #d63f45;
+  --danger-soft: #fdeaeb;
+  --info: #0b7a93;
+  --info-soft: #e0f3f7;
+
+  /* Terminal output keeps a dark background in both themes. */
+  --log-bg: #10111a;
+  --log-border: rgb(255 255 255 / 6%);
+  --log-text: #d8dbe6;
+  --log-muted: #8a93a3;
+  --log-info: #9aaddb;
+  --log-add: #9fe0b6;
+  --log-del: #f5a3a6;
+
+  /* The dark toast, the same in both themes. */
+  --toast-bg: rgb(22 23 34 / 92%);
+  --toast-text: #f2f2f7;
+  --toast-error: #c7353b;
+
+  --scrollbar: rgb(20 22 50 / 18%);
+
+  /* Three elevations: resting cards, floating menus, dialogs. */
+  --shadow-sm: 0 1px 2px rgb(20 22 50 / 4%), 0 1px 4px rgb(20 22 50 / 5%);
+  --shadow-md: 0 2px 4px -1px rgb(20 22 50 / 5%), 0 8px 20px -6px rgb(20 22 50 / 12%);
+  --shadow-lg: 0 0 0 1px rgb(20 22 50 / 4%), 0 28px 70px -16px rgb(20 22 50 / 30%);
+
+  /* App frame. */
+  --brand-height: 58px;
+  --sidebar-width: 216px;
+  --drawer-width: min(640px, calc(100vw - 20px));
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #12171c;
+  --surface: #1b232a;
+  --surface-2: #202a32;
+  --surface-3: #2b3842;
+  --glass: rgb(27 35 42 / 94%);
+  --column-bg: #171e25;
+  --border: #2b3741;
+  --border-strong: #43535f;
+  --text: #e7edf0;
+  --text-2: #acbac4;
+  --text-3: #90a2af;
+  --accent: #54bfae;
+  --accent-soft: #213d3a;
+  --accent-text: #7ed6c7;
+  --success: #3ecf8e;
+  --success-soft: #0f271d;
+  --warn: #f0b04a;
+  --warn-soft: #2c2311;
+  --danger: #f47a7e;
+  --danger-soft: #33181c;
+  --info: #5cc8df;
+  --info-soft: #0d262d;
+  --log-bg: #08090d;
+  --scrollbar: rgb(255 255 255 / 14%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%), 0 0 0 1px rgb(255 255 255 / 2%);
+  --shadow-md: 0 4px 10px -2px rgb(0 0 0 / 45%), 0 12px 28px -8px rgb(0 0 0 / 50%);
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 5%), 0 30px 80px -16px rgb(0 0 0 / 75%);
+  color-scheme: dark;
+}
+
+/*
+ * App logos (see BrandIcon.tsx) draw in their own colour. The marks that are black by brand —
+ * Notion, GitHub, Cursor, OpenCode — follow the text colour so they stay visible in either theme,
+ * and the darkest brand colours get a lighter mix in dark mode.
+ */
+[data-brand="claude"] { --brand-color: #d97757; }
+[data-brand="codex"] { --brand-color: #412991; }
+[data-brand="jira"] { --brand-color: #0052cc; }
+[data-brand="linear"] { --brand-color: #5e6ad2; }
+[data-brand="gitlab"] { --brand-color: #fc6d26; }
+[data-brand="notion"],
+[data-brand="github"],
+[data-brand="cursor"],
+[data-brand="opencode"] { --brand-color: var(--text); }
+
+:root[data-theme="dark"] [data-brand="codex"] { --brand-color: #a38ee8; }
+:root[data-theme="dark"] [data-brand="jira"] { --brand-color: #579dff; }
+:root[data-theme="dark"] [data-brand="linear"] { --brand-color: #8d95e6; }

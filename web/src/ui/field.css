@@ -1,0 +1,90 @@
+.ui-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ui-field > legend {
+  padding: 0;
+  /* A legend doesn't take part in the fieldset's flex gap. */
+  margin-bottom: 6px;
+}
+.ui-field__label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.ui-field__optional {
+  margin-left: 6px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 450;
+}
+.ui-field__error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+}
+.ui-field__note {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.ui-field-row {
+  display: flex;
+  gap: var(--space-3);
+}
+.ui-field-row > .ui-field {
+  flex: 1 1 0;
+}
+.ui-field-row > .ui-field--grow {
+  flex-grow: 2;
+}
+@media (max-width: 720px) {
+  .ui-field-row {
+    flex-direction: column;
+  }
+}
+
+.ui-search {
+  position: relative;
+  display: block;
+  width: min(300px, 100%);
+  color: var(--text-3);
+}
+.ui-search > svg {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.ui-search > input {
+  padding-left: var(--space-8);
+}
+
+.ui-checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: fit-content;
+  font-size: var(--text-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+.ui-checkbox--disabled {
+  color: var(--text-2);
+  cursor: default;
+}

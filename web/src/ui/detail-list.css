@@ -1,0 +1,19 @@
+.ui-details {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) minmax(0, 1fr);
+  gap: 6px var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.ui-details dt {
+  color: var(--text-3);
+}
+.ui-details dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.ui-details--mono dd {
+  font-family: var(--mono);
+}

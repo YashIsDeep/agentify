@@ -1,0 +1,56 @@
+.ui-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ui-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ui-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--tone) 18%, var(--border));
+  border-radius: var(--radius-full);
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ui-tone-neutral.ui-tag {
+  border-color: var(--border);
+}
+.ui-tag > svg {
+  flex: none;
+}
+.ui-tag__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+a.ui-tag:hover {
+  background: var(--surface-3);
+}
+
+.ui-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}

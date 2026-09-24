@@ -1,0 +1,80 @@
+.ui-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--scrim);
+  backdrop-filter: blur(5px);
+  animation: fade-in 0.16s ease-out;
+}
+
+.ui-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  animation: dialog-in 0.22s var(--ease);
+}
+.ui-dialog:focus {
+  outline: none;
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px)) scale(0.975);
+  }
+}
+
+.ui-dialog__form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ui-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-1) var(--space-5);
+}
+.ui-dialog__title {
+  font-size: var(--text-lg);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.ui-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5) var(--space-5);
+  overflow-y: auto;
+}
+.ui-dialog__lead {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ui-dialog__body > ul {
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--text-2);
+}
+
+.ui-dialog__footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 60%, var(--surface));
+}

@@ -1,0 +1,52 @@
+.ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.ui-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.ui-card__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  /* Tinted from the brand's own colour when it has one; the accent covers the rest. */
+  border: 1px solid color-mix(in srgb, var(--brand-color, var(--accent)) 18%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--brand-color, var(--accent)) 12%, var(--surface));
+  color: var(--brand-color, var(--accent-text));
+}
+.ui-card__title {
+  flex: 1;
+  min-width: 100px;
+  font-size: var(--text-lg);
+  overflow-wrap: anywhere;
+}
+
+/* Cards keep their own height, so opening one card's section doesn't stretch its neighbour. */
+.ui-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--space-5);
+}
+@media (max-width: 1100px) {
+  .ui-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 599px) {
+  .ui-card {
+    padding: var(--space-4);
+  }
+}
