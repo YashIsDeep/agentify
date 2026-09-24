@@ -344,7 +344,8 @@ export class Engine {
     for (const link of task.links) links[link.type] ??= link.value;
 
     return {
-      task: { ...task, links },
+      // No feedback is the usual case, so it renders empty without being reported as missing.
+      task: { ...task, links, lastFeedback: task.lastFeedback ?? "" },
       stage: { id: visit.stageId, name: visit.stageName },
       visit: { id: visit.id, attempt: visit.attempt },
       run: { id: run.id, key: run.bindingKey, label: run.label },
@@ -495,10 +496,17 @@ export class Engine {
     });
   }
 
-  /** Settles an approval that is waiting for you, so the next action runs. */
+  /**
+   * Settles an approval that is waiting for you, so the next action runs. Approving means the last
+   * Send back's note has been dealt with, so it is cleared rather than handed to later stages as if
+   * it were about their work.
+   */
   approveRun(runId: number): RunRow {
     return this.tx(() => {
       const { run, task } = this.waitingApproval(runId);
+      if (task.lastFeedback !== null) {
+        this.db.update(s.tasks).set({ lastFeedback: null, updatedAt: Date.now() }).where(eq(s.tasks.id, task.id)).run();
+      }
       const approved = this.db
         .update(s.actionRuns)
         .set({ status: "succeeded", endedAt: Date.now(), outputs: { ...(run.outputs ?? {}), decision: "approved" } })
@@ -564,8 +572,9 @@ export class Engine {
         .where(eq(s.actionRuns.id, run.id))
         .returning()
         .get();
-      // Saved like a Send back's note, so later prompts can still read {{task.lastFeedback}}.
-      this.db.update(s.tasks).set({ lastFeedback: note, updatedAt: Date.now() }).where(eq(s.tasks.id, task.id)).run();
+      // The note reaches the agent as this run's follow-up. It is deliberately not saved as
+      // task.lastFeedback: that would hand a note about, say, the requirements to the next stage's
+      // agent as "reviewer feedback" on its own work.
       this.timeline(task.id, run.visitId, run.id, "feedback", note);
       this.timeline(task.id, run.visitId, run.id, "run.changes-requested", `Asked ${run.label} for changes`);
       this.publish({ type: "run.changed", taskId: task.id, runId: run.id });

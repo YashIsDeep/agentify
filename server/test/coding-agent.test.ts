@@ -271,7 +271,8 @@ describe("coding-agent action", () => {
     });
     expect(revised).toContain("codex resumed codex-thread-1");
     expect(revised).toContain("prompt:Use fewer words");
-    expect(q.detail(task.id).task.lastFeedback).toBe("Use fewer words");
+    // The note went to this agent; later stages must not read it as feedback on their own work.
+    expect(q.detail(task.id).task.lastFeedback).toBeNull();
     expect(q.runs(task.id, "agent")).toHaveLength(1);
 
     const again = await waitFor(() =>

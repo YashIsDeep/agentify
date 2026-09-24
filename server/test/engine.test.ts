@@ -167,7 +167,8 @@ describe("engine", () => {
               actionType: "write-artifact",
               config: { name: "out.md", content: '[{{artifacts["requirements.md"]}}][{{outputs.openMr.mrUrl}}][{{task.title}}]' },
             },
-            { key: "fine", label: "Fine", actionType: "write-artifact", config: { name: "fine.md", content: "{{task.title}}" } },
+            // No feedback yet is the normal case, not a missing value.
+            { key: "fine", label: "Fine", actionType: "write-artifact", config: { name: "fine.md", content: "{{task.title}}{{task.lastFeedback}}" } },
           ],
         },
       ],
@@ -257,6 +258,12 @@ describe("engine", () => {
     expect(() => h.engine.approveRun(review.id)).toThrow(/not waiting for approval/);
     await h.runner.idle();
     expect(artifact(task.id, "ship.md")).toBeUndefined();
+
+    // Once the stage it was sent back to is signed off, the note has been dealt with.
+    const readyAgain = q.latest(task.id, "ready")!;
+    expect(readyAgain.status).toBe("awaiting-approval");
+    h.engine.approveRun(readyAgain.id);
+    expect(q.detail(task.id).task.lastFeedback).toBeNull();
   });
 
   it("caps concurrent long-running actions and queues the rest", async () => {
