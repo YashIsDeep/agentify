@@ -50,10 +50,16 @@ couldn't be read at a glance. A stage is now just a list.
    `task.lastFeedback`; the task moves to that stage and nothing after the run starts). Two kinds
    reach that state: a **coding agent** with *wait for my approval* on — its process has already
    exited, so it holds no concurrency slot — and a standalone **Approval**, which never reaches the
-   runner at all. An agent's approval adds **Request changes**: your note is saved as
-   `task.lastFeedback` and the **same run row** is queued again with the note as its prompt,
-   resuming the session it just used, so one run stays one conversation however many rounds it takes.
+   runner at all. An agent's approval adds **Request changes**: the **same run row** is queued again
+   with your note as its prompt, resuming the session it just used, so one run stays one
+   conversation however many rounds it takes. Each round's tokens and cost are added to the run's
+   `usage`, and its time kept as `usage.priorMs`, so the run reports all its rounds, not the last.
    Runs awaiting you survive a server restart; sending back to the same stage runs it again as a new attempt.
+
+   `task.lastFeedback` is only a Send back's note, and **approving any gate clears it**. A Request
+   changes note is not saved there: it went to that agent, and a later stage's prompt reading
+   `{{task.lastFeedback}}` would otherwise take it as feedback on its own work (the 24 Sep QA found
+   an implementer told to "remove the Open questions section" of the requirements).
 4. When every run has settled the visit is **complete**. Moving on is itself an action (`move-stage`,
    usually last); a stage with no actions (Backlog) just holds tasks until they're dragged.
 
@@ -149,7 +155,7 @@ interface ActionContext<Config> {
 | `approval` | A checkpoint that follows no agent ("approve once the MR is merged"). Pauses the list until you approve (§2). Config: instructions (templated, shown on the task), optional Send back stage, ask for a note. Settled by the engine; never run. To sign off an agent's work, use that agent's own approval instead. |
 | `open-merge-request` | Optionally commits, pushes, and opens an MR/PR: github.com remotes use `gh pr create`, anything else uses GitLab push options. Output `mrUrl`. |
 | `move-stage` | `target: "next" \| <stageId>`. |
-| `archive-task` | Removes worktree (branch kept), purges transcripts + sync state, moves to archive. |
+| `archive-task` | Removes worktree (branch kept) and the links carry-over made in it, without following them; purges transcripts + sync state, moves to archive. The Archive dialog warns before archiving a worktree with uncommitted changes. |
 | `jira-transition` | Resolves the transition by name on the issue's current status, applies it, optional comment (converted to ADF). Outputs `issueKey`, `status`. |
 | `linear-update` | Finds the issue by `TEAM-123` (or URL), moves it to a named state in its own team, optional comment. Outputs `identifier`, `url`, `state`. |
 | `notion-append` | Appends Markdown-derived blocks to a page, or creates a page in a database under its own title property. Outputs `pageId`, `url`. |
@@ -404,10 +410,18 @@ the agent asks again while an earlier question is still pending — its call was
 question replaces the old one instead of being refused. OpenCode can't be pointed at an MCP server
 per run, so it never asks.
 
-*Known limitation (2026-09-11):* in a live Claude Code run the question outlasted both the 60s
-default and five minutes, but the call still ended at ~353s with "The operation timed out.",
-despite the raised `timeout`. Some further limit applies and hasn't been found yet. The chat marks
-such a question as ended without an answer rather than hiding it.
+A choice question also takes typed text: on its own it is the answer (the "none of these" case),
+beside a picked option it goes as `option — note`. The tool's description invites rounds of related
+questions, recommendation first, and asks the agent to ask again if a call times out.
+
+*Known limitation (2026-09-11, still true 2026-09-24 on Claude Code 2.1.267):* the call ends after
+~340–353s with "The operation timed out.", despite the raised `timeout`. Some further limit applies
+and hasn't been found. In practice the agent asks again, the new question replaces the old one, and
+an answer you were typing stays in the form.
+
+**Saved results** drop a line or two of chat before the document's first heading ("Here's the
+plan."), so an artifact starts with its content; a longer lead-in, or one that looks like content,
+is kept.
 
 ---
 
@@ -418,10 +432,10 @@ such a question as ended without an answer rather than hiding it.
 |---|---|
 | Backlog | — |
 | To Pick | — |
-| Solidify Reqs | `ensure-worktree` → `coding-agent` (read-only, save result as `requirements.md`, waits for your approval — Request changes redrafts it in the same session) → `move-stage next` |
+| Solidify Reqs | `ensure-worktree` → `coding-agent` (read-only, settles decisions with you through `ask_user` before writing, save result as `requirements.md`, waits for your approval — Request changes redrafts it in the same session) → `move-stage next` |
 | Implement Reqs | `jira-transition` In Progress (off) → `ensure-worktree` → `coding-agent` (autonomous, continue session, waits for your approval) with `{{artifacts["requirements.md"]}}` and `{{task.lastFeedback}}` → `move-stage next` |
 | Review Imp | Approval *Review diff* (Send back to Implement Reqs, with a note) → `move-stage next` |
-| Test Imp | `shell` (placeholder test command) → Approval *Manual QA* → `move-stage next` |
+| Test Imp | `shell` *Install dependencies* (off) → `shell` *Run tests* (off, placeholder) → Approval *Manual QA* (says tests only run once those are set up, and that approving opens the MR; Send back to Implement Reqs) → `move-stage next` |
 | Submit MR | `open-merge-request` → `jira-transition` In Review (off) → Approval *Merged* → `archive-task` |
 
 JIRA/Linear actions are included but **switched off** until a connection exists, and marked
@@ -437,6 +451,8 @@ Only these two are seeded. Anything else — a research spike, say — is built 
 
 ## 5. UI
 
+Components, tokens and the rules screens follow are in [DESIGN-SYSTEM.md](DESIGN-SYSTEM.md).
+
 - **Board** (per workflow): columns = stages; dnd-kit drag anywhere; WIP warning.
   **Card**: title, action progress dots, status badge (running spinner / needs-you amber /
   quota-wait teal "Resets 2:40 AM" / failed red / queued grey), link icons, time in stage.
@@ -448,10 +464,13 @@ Only these two are seeded. Anything else — a research spike, say — is built 
   task is stopped either way) but keeps its own card badge carrying the reset time. A count opens a
   list of its tasks (what it is about, workflow · stage), failures before limit waits and those by
   soonest reset; picking one opens it on its board. The tab title carries the needs-you count.
-- **Task drawer**: header fields, stage stepper, the stage's numbered actions (Approve / Request changes /
+- **Task drawer**: header fields with an Archive button, stage stepper, the stage's numbered actions (Approve / Request changes /
   Send back on a run awaiting you, Retry / Skip on a failure, Start when nothing has run),
   timeline grouped by visit (live-streamed action logs, collapsible), artifacts
   (markdown preview), outputs. A run blocked on a question shows an **Answer** prompt in place.
+  A review gate shows the branch's diff against its base, uncommitted and brand-new (untracked)
+  files included — the latter diffed on a scratch copy of the index, so the worktree's staging area
+  is untouched.
 - **Agent chat** (modal, from any coding-agent run): sidebar of the task's agent runs; header with
   agent · model · effort · autonomy, status, duration, usage, cancel / retry; the transcript as messages,
   tool rows paired with their results, question and answer turns, and notices; the live question
@@ -460,7 +479,9 @@ Only these two are seeded. Anything else — a research spike, say — is built 
 - **Workflow editor**: stage columns (reorder, add, rename), each listing its numbered actions
   (reorder with the arrows that show on hover); clicking a stage or action (or adding one) opens a
   dialog that edits it — stage (name, WIP limit, coding-agent defaults) or action (action type →
-  generated config form with template-variable hints, continue if this fails, enabled). New / Duplicate / Delete
+  generated config form with template-variable hints, enabled; the key, "continue if this fails" and
+  any field the action marks `advanced` fold away under *Advanced*, open when one of them isn't at
+  its default). New / Duplicate / Delete
   per workflow; deleting one that tasks use lists them and needs a tick to delete them too. Edits
   are a local draft until **Save**; deleting a stage with active tasks in it is refused. The ✕ on
   the page chip, or the brand, returns to the board.
@@ -468,7 +489,8 @@ Only these two are seeded. Anything else — a research spike, say — is built 
   a **Test** button reporting who we authenticated as, and add/delete. Secrets show as *saved* and
   stay blank unless you type a replacement.
 - **Agents**: detected path + version per CLI (path overridable), default model + effort, "Test"
-  button running a tiny prompt with those defaults.
+  button running a tiny prompt with those defaults. The install or login command shows on the card
+  whenever the CLI isn't ready; the rest of the setup folds out below it.
 - **Retry dialog**: agent + model + effort dropdowns prefilled from the failed run.
 - **Archive**: searchable list; read-only timeline summary + artifacts.
 - Live updates via **Server-Sent Events**.
