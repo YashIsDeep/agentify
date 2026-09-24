@@ -73,21 +73,18 @@ export const codingAgentAction: ActionDefinition<Config> = {
       label: "Agent",
       kind: "agent",
       default: "",
-      help: "Blank uses the stage's default agent, else Claude Code. A per-task or retry-time choice overrides this.",
     },
     {
       name: "model",
       label: "Model",
       kind: "model",
       default: "",
-      help: "Blank uses the stage's default, then the agent's (Agents page), then the CLI's.",
     },
     {
       name: "effort",
       label: "Reasoning effort",
       kind: "effort",
       default: "",
-      help: "Blank uses the stage's or agent's default when it comes with the same model, else the model's own.",
     },
     {
       name: "autonomy",
@@ -105,7 +102,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
       kind: "boolean",
       // New editor actions start with review enabled; the schema keeps existing configs opt-in.
       default: true,
-      help: "Review the result, request revisions as often as you need, then Approve & continue. Each revision returns for review; nothing below runs until you approve.",
+      help: "Review the result and ask for revisions until you approve. Nothing after it runs until then.",
     },
     {
       name: "approvalInstructions",
@@ -124,13 +121,14 @@ export const codingAgentAction: ActionDefinition<Config> = {
       default: "",
       dependsOn: "requireApproval",
       noneLabel: "No Send back button",
-      help: "An escape hatch next to Approve, for when the work belongs at an earlier stage rather than with the agent.",
+      help: "Adds a Send back button next to Approve, for work that belongs at an earlier stage.",
     },
     {
       name: "continueSession",
       label: "Continue the previous session",
       kind: "boolean",
       default: false,
+      advanced: true,
       help: "Resumes this action's last session for the task, if the agent is unchanged.",
     },
     {
@@ -146,9 +144,10 @@ export const codingAgentAction: ActionDefinition<Config> = {
       label: "Inactivity timeout (seconds)",
       kind: "number",
       default: 300,
+      advanced: true,
       help: "Fails the run when the agent produces no output for this long.",
     },
-    { name: "timeoutSec", label: "Total timeout (seconds)", kind: "number", default: undefined, placeholder: "No limit" },
+    { name: "timeoutSec", label: "Total timeout (seconds)", kind: "number", default: undefined, placeholder: "No limit", advanced: true },
   ],
 
   async run({ config, run, task, artifactDir, env, log, signal, services }) {

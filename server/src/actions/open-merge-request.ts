@@ -32,12 +32,13 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
       templated: true,
       help: "Leave blank to fail instead when the worktree is dirty.",
     },
-    { name: "remote", label: "Remote", kind: "text", default: "origin" },
+    { name: "remote", label: "Remote", kind: "text", default: "origin", advanced: true },
     {
       name: "host",
       label: "Host",
       kind: "select",
       default: "auto",
+      advanced: true,
       options: [
         { value: "auto", label: "Detect from the remote URL" },
         { value: "gitlab", label: "GitLab (push options)" },
@@ -50,6 +51,7 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
       label: "Require a merge request link",
       kind: "boolean",
       default: true,
+      advanced: true,
       help: "Fails the run when the push worked but no merge request came back. Turn it off only for a remote that opens merge requests elsewhere; later steps templating mrUrl then render a blank.",
     },
   ],

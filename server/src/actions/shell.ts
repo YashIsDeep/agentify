@@ -28,6 +28,7 @@ export const shellAction: ActionDefinition<Config> = {
       label: "Shell",
       kind: "select",
       default: "default",
+      advanced: true,
       options: [
         { value: "default", label: "System default" },
         { value: "cmd", label: "cmd.exe" },
@@ -48,12 +49,13 @@ export const shellAction: ActionDefinition<Config> = {
         { value: "artifacts", label: "Artifact directory" },
       ],
     },
-    { name: "timeoutSec", label: "Timeout (seconds)", kind: "number", default: undefined, placeholder: "No limit" },
+    { name: "timeoutSec", label: "Timeout (seconds)", kind: "number", default: undefined, placeholder: "No limit", advanced: true },
     {
       name: "extract",
       label: "Outputs from stdout",
       kind: "key-value",
       default: {},
+      advanced: true,
       help: "Output name → regular expression. The first capture group becomes the value.",
       keyLabel: "Output",
       valueLabel: "Regex",

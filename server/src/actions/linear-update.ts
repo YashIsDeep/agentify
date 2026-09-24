@@ -24,6 +24,7 @@ export const linearUpdateAction: ActionDefinition<z.output<typeof configSchema>>
       kind: "text",
       default: "{{task.links.linear}}",
       templated: true,
+      advanced: true,
       help: "Issue id like ENG-123, or its URL. The default uses the task's “linear” link.",
     },
     {

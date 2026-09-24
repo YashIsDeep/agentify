@@ -24,6 +24,7 @@ export const jiraTransitionAction: ActionDefinition<z.output<typeof configSchema
       kind: "text",
       default: "{{task.links.jira}}",
       templated: true,
+      advanced: true,
       help: "Issue key or URL. The default uses the task's “jira” link.",
     },
     {

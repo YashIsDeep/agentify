@@ -18,14 +18,14 @@ export const ensureWorktreeAction: ActionDefinition<z.output<typeof configSchema
     "Creates a dedicated git worktree and branch for the task (once). Does nothing for tasks without a repository.",
   configSchema,
   fields: [
-    { name: "branchPrefix", label: "Branch prefix", kind: "text", default: "wm/", help: "Branch name is the prefix plus the task slug." },
+    { name: "branchPrefix", label: "Branch prefix", kind: "text", default: "wm/", advanced: true, help: "Branch name is the prefix plus the task slug." },
     {
       name: "carryOver",
       label: "Carry over from the repository",
       kind: "textarea",
       default: ".env",
       placeholder: ".env, node_modules",
-      help: "Gitignored paths a worktree would otherwise be missing, comma- or newline-separated. Files are copied, so the worktree gets its own; directories are linked, which makes a node_modules instant to share but means installing in the worktree rewrites the repository's copy. Paths the repository doesn't have are skipped.",
+      help: "Gitignored paths to bring into the worktree, comma- or newline-separated. Files are copied; directories are linked, so installing in the worktree also changes the repository's copy.",
     },
   ],
   async run({ config, task, services, signal, log }) {

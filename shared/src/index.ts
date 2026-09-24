@@ -328,6 +328,8 @@ export interface ActionField {
   templated?: boolean;
   /** Only shown in the editor while the named boolean field of the same action is on. */
   dependsOn?: string;
+  /** Rarely changed; the editor folds it away under "Advanced" unless it differs from its default. */
+  advanced?: boolean;
   keyLabel?: string;
   valueLabel?: string;
 }
