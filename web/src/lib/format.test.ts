@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { age, cls, duration, fileSize, parseTags, relativeTime } from "./format";
+import { age, cls, duration, fileSize, parseTags, relativeTime, runDuration } from "./format";
 
 describe("format", () => {
   const now = Date.UTC(2026, 8, 10, 12, 0, 0);
@@ -19,6 +19,13 @@ describe("format", () => {
     expect(duration(now - 42_000, now)).toBe("42s");
     expect(duration(now - 125_000, null, now)).toBe("2m 5s");
     expect(duration(now - 3_780_000, now)).toBe("1h 3m");
+  });
+
+  it("counts every round a run went through", () => {
+    const round = { startedAt: now - 30_000, endedAt: now };
+    expect(runDuration({ ...round, usage: null }, now)).toBe("30s");
+    expect(runDuration({ ...round, usage: { priorMs: 90_000 } }, now)).toBe("2m 0s");
+    expect(runDuration({ startedAt: null, endedAt: null, usage: { priorMs: 90_000 } }, now)).toBe("");
   });
 
   it("formats sizes, tags and class names", () => {

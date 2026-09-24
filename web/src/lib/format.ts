@@ -48,6 +48,19 @@ export function fileSize(bytes: number): string {
 
 const compact = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value));
 
+/**
+ * A run's working time across every round it went through. Asking for changes or waiting out a usage
+ * limit sends the same run round again; its earlier rounds are kept as `usage.priorMs`.
+ */
+export function runDuration(
+  run: { startedAt: number | null; endedAt: number | null; usage: Record<string, unknown> | null },
+  now = Date.now(),
+): string {
+  if (!run.startedAt) return "";
+  const prior = typeof run.usage?.priorMs === "number" ? run.usage.priorMs : 0;
+  return duration(run.startedAt - prior, run.endedAt, now);
+}
+
 /** "12.3k in · 450 out · $0.03 est." */
 export function usageSummary(usage: Record<string, unknown> | null | undefined): string {
   if (!usage) return "";
@@ -70,3 +83,6 @@ export function truncateText(text: string, max: number): string {
 export function parseTags(text: string): string[] {
   return [...new Set(text.split(",").map((tag) => tag.trim()).filter(Boolean))];
 }
+
+/** "1 stage", "3 stages". */
+export const countOf = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;

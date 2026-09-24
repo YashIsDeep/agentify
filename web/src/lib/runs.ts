@@ -4,6 +4,7 @@ import {
   type RunStatus,
   type RunView,
   resolveAgentChoice,
+  type StageAgentDefaults,
   type StageDef,
   type TaskDetail,
   type TaskSummary,
@@ -46,15 +47,25 @@ export const entryActionLabels = (stage: StageDef): string[] =>
 export const isAgentRun = (run: RunView) => run.actionType === "coding-agent";
 
 /**
- * "Codex · gpt-6-astra · high": what ran, or what will run (retry choice → task override → action,
- * by the server's own rules). The agent's saved default isn't known here, so a preview leaves it out.
+ * "Codex · gpt-6-astra · high": what ran, or what will run (retry choice → task override → action →
+ * stage default, by the server's own rules). The agent's saved default isn't known here, so a
+ * preview leaves it out.
  */
-export function describeAgent(run: RunView, task: Pick<TaskSummary, "agentOverride" | "modelOverride" | "effortOverride">): string {
+export function describeAgent(
+  run: RunView,
+  task: Pick<TaskSummary, "agentOverride" | "modelOverride" | "effortOverride">,
+  stageDefaults?: StageAgentDefaults,
+): string {
   const outputs = run.outputs ?? {};
   const layers =
     typeof outputs.agent === "string"
       ? [outputs]
-      : [run.overrides ?? {}, { agent: task.agentOverride, model: task.modelOverride, effort: task.effortOverride }, run.config];
+      : [
+          run.overrides ?? {},
+          { agent: task.agentOverride, model: task.modelOverride, effort: task.effortOverride },
+          run.config,
+          stageDefaults ?? {},
+        ];
   const { agent, model, effort } = resolveAgentChoice(layers, () => NO_AGENT_DEFAULTS);
   return [agentLabel(agent), model, effort].filter(Boolean).join(" · ");
 }
