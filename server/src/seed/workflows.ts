@@ -328,7 +328,12 @@ Finish with a short summary of what changed.`,
             },
             enabled: false,
           },
-          approval("manualQa", "Manual QA"),
+          approval("manualQa", "Manual QA", {
+            // Says plainly what did and didn't happen: with the two actions above off, no test has run.
+            instructions:
+              "Try the change in {{task.worktreePath}}. Automated tests only run here once Install dependencies and Run tests are set up and switched on for this workflow. Approving opens the merge request.",
+            sendBackTo: "Implement Reqs",
+          }),
           next("testNext"),
         ],
       },
