@@ -35,12 +35,18 @@ export async function gitSucceeds(args: string[], cwd: string): Promise<boolean>
   return result.code === 0;
 }
 
+const SLUG_LENGTH = 40;
+
+/** Lower-case words joined by hyphens, at most 40 characters, cut between words where it can be. */
 export function slugify(text: string): string {
-  const slug = text
+  const full = text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/-+$/g, "");
-  return slug || "task";
+    .replace(/^-+|-+$/g, "");
+  if (full.length <= SLUG_LENGTH) return full || "task";
+  // One character more, so a word ending exactly at the limit still counts as whole.
+  const boundary = full.slice(0, SLUG_LENGTH + 1).lastIndexOf("-");
+  // A single long word would leave almost nothing; cut through it instead.
+  const slug = boundary >= SLUG_LENGTH / 2 ? full.slice(0, boundary) : full.slice(0, SLUG_LENGTH);
+  return slug.replace(/-+$/g, "") || "task";
 }
