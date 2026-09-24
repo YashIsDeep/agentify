@@ -240,12 +240,19 @@ Task: {{task.title}}
 
 ${FEEDBACK_BLOCK}
 
-Explore the repository as needed, then reply with only a Markdown requirements document containing:
+Explore the repository first. Then settle every decision that would change what gets built by
+asking me with the ask_user tool: group related questions, give each 2-4 concrete options with your
+recommendation first, and ask another round when my answers open new decisions. Don't ask what the
+code can tell you. Without an ask_user tool, list those decisions under Open questions instead, each
+with your recommendation.
+
+Then reply with only the Markdown requirements document, nothing before it, containing:
 ## Goal
 ## Scope (in / out)
+## Decisions (each with the answer I gave)
 ## Functional requirements (numbered, testable)
 ## Edge cases
-## Open questions`,
+## Open questions (only what is still unsettled; "None" otherwise)`,
             }),
           },
           next("solidifyNext"),

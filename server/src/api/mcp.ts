@@ -26,19 +26,24 @@ const questionShape = {
       z.object({
         id: z.string().optional().describe("Stable id for this question; generated if omitted."),
         text: z.string().describe("The question, phrased for a human."),
-        options: z.array(z.string()).optional().describe("Offer these as a fixed set of choices."),
+        options: z
+          .array(z.string())
+          .optional()
+          .describe("Offer these as choices, your recommendation first. The person can also type their own answer or add a note."),
         multiline: z.boolean().optional().describe("Ask for a longer free-text answer."),
       }),
     )
     .min(1)
-    .describe("Ask everything you need in one call rather than one question at a time."),
+    .describe("Group the questions you can already ask into one call rather than asking one at a time."),
 };
 
 const DESCRIPTION = [
   "Ask the person running this workflow a question and wait for their answer.",
   "Use this when a decision is genuinely theirs — an ambiguous requirement, a missing detail, a",
-  "choice between approaches you cannot make safely alone. The call blocks until they reply, so",
-  "ask everything you need at once, and only when you are actually stuck.",
+  "choice between approaches you cannot make safely alone — not for anything you can find out from",
+  "the code. The call blocks until they reply, so group related questions into one call; ask another",
+  "round when their answers open new decisions. A choice answer may be one of your options, their",
+  "own words, or an option followed by a note. If the call times out, ask again: they may still be reading.",
 ].join(" ");
 
 /**
