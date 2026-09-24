@@ -224,15 +224,20 @@ describe("api", () => {
     const response = await h.app.request(`/api/tasks/${task.id}/diff`);
     expect(response.status).toBe(200);
     const diff = (await response.json()) as TaskDiff;
-    expect(diff).toMatchObject({ branch: "wm/feature", baseBranch: "main", uncommitted: true, truncated: false });
+    expect(diff).toMatchObject({ branch: "wm/feature", baseBranch: "main", uncommitted: true, dirty: true, truncated: false });
     expect(diff.files.map((file) => [file.path, file.status, file.untracked])).toEqual([
       ["README.md", "modified", false],
       ["app.ts", "added", false],
       ["scratch.txt", "added", true],
     ]);
-    expect([diff.insertions, diff.deletions]).toEqual([2, 0]);
+    // A new file the agent never added is often the heart of the change, so it is diffed too...
+    expect(diff.files.find((file) => file.path === "scratch.txt")).toMatchObject({ insertions: 1, deletions: 0 });
+    expect([diff.insertions, diff.deletions]).toEqual([3, 0]);
     expect(diff.patch).toContain("+export const a = 1;");
     expect(diff.patch).toContain("+now with notes");
+    expect(diff.patch).toContain("+not added");
+    // ...without touching the worktree's own staging area.
+    expect(gitIn("status", "--porcelain")).toContain("?? scratch.txt");
 
     removeDir(repo);
   });

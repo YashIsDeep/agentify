@@ -10,6 +10,8 @@ export interface GitOptions {
   onLine?: (text: string, stream: "stdout" | "stderr") => void;
   /** Return stdout + stderr (remote messages such as merge request links land on stderr). */
   includeStderr?: boolean;
+  /** Extra environment, e.g. GIT_INDEX_FILE to work on a scratch index. */
+  env?: Record<string, string>;
 }
 
 /** Runs git without a shell and returns trimmed output. Throws GitError on non-zero exit. */
@@ -18,7 +20,7 @@ export async function git(args: string[], options: GitOptions): Promise<string> 
     command: "git",
     args,
     cwd: options.cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...process.env, ...options.env, GIT_TERMINAL_PROMPT: "0" },
     signal: options.signal,
     // Stripped here so every git-invoking action logs plain text, whatever the repo's colour config says.
     onLine: options.onLine && ((text, stream) => options.onLine?.(stripAnsi(text), stream)),

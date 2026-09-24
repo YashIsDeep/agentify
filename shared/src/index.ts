@@ -642,7 +642,7 @@ export interface TaskDiffFile {
   deletions: number;
   /** Binary files have no line counts and no hunks. */
   binary: boolean;
-  /** Created but never added to git, so only its name is known; it has no hunks either. */
+  /** Created but never added to git. Still diffed in full; flagged so the review can say so. */
   untracked: boolean;
 }
 
@@ -661,6 +661,8 @@ export interface TaskDiff {
   truncated: boolean;
   /** Whether uncommitted work is included — it isn't when the branch isn't checked out. */
   uncommitted: boolean;
+  /** The checkout has changes that aren't committed, which removing the worktree would discard. */
+  dirty: boolean;
 }
 
 export type ServerEvent =

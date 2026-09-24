@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { TaskDiff, TaskDiffFile, TaskDiffStatus } from "@wm/shared";
 import type { TaskRow } from "../db/schema";
 import { EngineError } from "../engine/engine";
@@ -32,14 +35,19 @@ export async function taskDiff(task: TaskRow): Promise<TaskDiff> {
   // `git diff <base>` reaches the working tree; naming the branch as well stops at its last commit.
   const range = uncommitted ? [base] : [base, branch];
 
-  const files = await changedFiles(cwd, range);
-  if (uncommitted) files.push(...(await untrackedFiles(cwd)));
-  const { patch, truncated } = await readPatch(cwd, range);
+  const { files, patch, truncated } = await withUntracked(cwd, uncommitted, async (env, untracked) => ({
+    files: await changedFiles(cwd, range, env, untracked),
+    ...(await readPatch(cwd, range, env)),
+  }));
+
+  // What archiving would throw away: anything not yet committed where the branch is checked out.
+  const dirty = uncommitted && (await git(["status", "--porcelain"], { cwd })).length > 0;
 
   return {
     branch,
     baseBranch,
     path: cwd,
+    dirty,
     files,
     insertions: files.reduce((total, file) => total + file.insertions, 0),
     deletions: files.reduce((total, file) => total + file.deletions, 0),
@@ -50,9 +58,14 @@ export async function taskDiff(task: TaskRow): Promise<TaskDiff> {
 }
 
 /** `--name-status` says what happened to each file, `--numstat` how much of it changed. */
-async function changedFiles(cwd: string, range: string[]): Promise<TaskDiffFile[]> {
-  const statuses = parseStatuses(await git(["diff", "--name-status", "-M", "-z", ...range], { cwd }));
-  const counts = parseCounts(await git(["diff", "--numstat", "-M", "-z", ...range], { cwd }));
+async function changedFiles(
+  cwd: string,
+  range: string[],
+  env: Record<string, string>,
+  untracked: Set<string>,
+): Promise<TaskDiffFile[]> {
+  const statuses = parseStatuses(await git(["diff", "--name-status", "-M", "-z", ...range], { cwd, env }));
+  const counts = parseCounts(await git(["diff", "--numstat", "-M", "-z", ...range], { cwd, env }));
   return [...statuses].map(([path, { status, oldPath }]) => ({
     path,
     oldPath,
@@ -60,34 +73,53 @@ async function changedFiles(cwd: string, range: string[]): Promise<TaskDiffFile[
     insertions: counts.get(path)?.insertions ?? 0,
     deletions: counts.get(path)?.deletions ?? 0,
     binary: counts.get(path)?.binary ?? false,
-    untracked: false,
+    untracked: untracked.has(path),
   }));
 }
 
-/** Files an agent wrote but never added. They have no hunks, but leaving them out would mislead. */
-async function untrackedFiles(cwd: string): Promise<TaskDiffFile[]> {
-  const output = await git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd });
-  return records(output).map((path) => ({
-    path,
-    oldPath: null,
-    status: "added" as const,
-    insertions: 0,
-    deletions: 0,
-    binary: false,
-    untracked: true,
-  }));
+/** Keeps each `git add` well inside Windows' command-line limit. */
+const ADD_BATCH = 200;
+
+/**
+ * Files an agent wrote but never added are often the heart of the change (a new module, its
+ * tests), so they are diffed like any other. `git add -N` marks them intent-to-add, which makes
+ * `git diff` show them as new files with hunks — done on a scratch copy of the index, so the
+ * worktree's own staging area is never touched.
+ */
+async function withUntracked<T>(
+  cwd: string,
+  uncommitted: boolean,
+  read: (env: Record<string, string>, untracked: Set<string>) => Promise<T>,
+): Promise<T> {
+  const paths = uncommitted ? records(await git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd })) : [];
+  if (!paths.length) return read({}, new Set());
+
+  const scratch = await mkdtemp(join(tmpdir(), "wm-diff-"));
+  try {
+    const index = join(scratch, "index");
+    const real = resolve(cwd, await git(["rev-parse", "--git-path", "index"], { cwd }));
+    if (existsSync(real)) await copyFile(real, index);
+    const env = { GIT_INDEX_FILE: index };
+    for (let i = 0; i < paths.length; i += ADD_BATCH) {
+      await git(["add", "--intent-to-add", "--", ...paths.slice(i, i + ADD_BATCH)], { cwd, env });
+    }
+    return await read(env, new Set(paths));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
  * Read line by line so a huge diff is cut at its end rather than at its start: `runProcess` keeps
  * the tail of what a command printed, which is the wrong half of a patch.
  */
-async function readPatch(cwd: string, range: string[]): Promise<{ patch: string; truncated: boolean }> {
+async function readPatch(cwd: string, range: string[], env: Record<string, string>): Promise<{ patch: string; truncated: boolean }> {
   const lines: string[] = [];
   let length = 0;
   let truncated = false;
   await git(["-c", "core.quotePath=false", "diff", "-M", ...range], {
     cwd,
+    env,
     onLine: (text, stream) => {
       if (stream !== "stdout" || truncated) return;
       if (length + text.length > MAX_PATCH_CHARS) {
