@@ -68,11 +68,18 @@ export function usageSummary(usage: Record<string, unknown> | null | undefined):
   const parts: string[] = [];
   const input = num("inputTokens");
   const output = num("outputTokens");
-  const cost = num("costUsd");
   if (input !== undefined) parts.push(`${compact(input)} in`);
   if (output !== undefined) parts.push(`${compact(output)} out`);
-  if (cost) parts.push(`$${cost.toFixed(cost < 0.01 ? 4 : 2)}${usage.estimated ? " est." : ""}`);
+  const cost = usageCost(usage);
+  if (cost) parts.push(cost);
   return parts.join(" · ");
+}
+
+/** "$1.66 est.", or "" when the run reported no cost. */
+export function usageCost(usage: Record<string, unknown> | null | undefined): string {
+  const cost = usage?.costUsd;
+  if (typeof cost !== "number" || !cost) return "";
+  return `$${cost.toFixed(cost < 0.01 ? 4 : 2)}${usage?.estimated ? " est." : ""}`;
 }
 
 export function truncateText(text: string, max: number): string {

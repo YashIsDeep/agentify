@@ -88,7 +88,8 @@ export function Timeline({
           visit={visit}
           events={events.filter((event) => event.visitId === visit.id)}
           current={visit.id === detail.task.currentVisitId && !archived}
-          defaultOpen={index === 0}
+          // The stage panel above already lays out the current stage, so the history starts folded.
+          defaultOpen={index === 0 && (archived || visit.id !== detail.task.currentVisitId)}
           context={context}
         />
       ))}

@@ -27,6 +27,8 @@ export function App() {
   const view: View = VIEWS.includes(viewParam as View) ? (viewParam as View) : "board";
   const taskId = useQueryParam("task");
   const [creating, setCreating] = useState(false);
+  // Set when a task is opened from the sidebar's lists: its drawer opens straight onto the agent's chat.
+  const [openChat, setOpenChat] = useState<{ taskId: string; runId: number } | null>(null);
 
   const openTask = useCallback((id: string) => setQueryParams({ task: id }), [setQueryParams]);
   const closeTask = useCallback(() => setQueryParams({ task: null }), [setQueryParams]);
@@ -54,7 +56,11 @@ export function App() {
         onSelectWorkflow={(id) => setQueryParams({ workflow: id, view: null, task: null })}
         onSelectView={(next) => setQueryParams({ view: next === "board" ? null : next, task: null })}
         // The task may sit on another workflow's board, or be opened from a page that isn't a board.
-        onOpenTask={(task) => setQueryParams({ workflow: task.workflowId, view: null, task: task.id })}
+        onOpenTask={(task) => {
+          if (!setQueryParams({ workflow: task.workflowId, view: null, task: task.id })) return;
+          const runId = task.badge === "needs-you" ? task.badgeDetail?.chatRunId : undefined;
+          setOpenChat(runId ? { taskId: task.id, runId } : null);
+        }}
       />
       <main className="main">
         {view === "archive" ? (
@@ -80,7 +86,16 @@ export function App() {
           </Splash>
         )}
       </main>
-      {taskId && <TaskDrawer key={taskId} taskId={taskId} workflows={list} onClose={closeTask} />}
+      {taskId && (
+        <TaskDrawer
+          key={taskId}
+          taskId={taskId}
+          workflows={list}
+          openChatRunId={openChat?.taskId === taskId ? openChat.runId : null}
+          onChatOpened={() => setOpenChat(null)}
+          onClose={closeTask}
+        />
+      )}
       {creating && workflow && (
         <NewTaskDialog
           workflows={list}

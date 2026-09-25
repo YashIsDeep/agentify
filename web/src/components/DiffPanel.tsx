@@ -31,13 +31,17 @@ export function DiffPanel({ task }: { task: TaskSummary }) {
     <div className="diff-panel">
       <div className="diff-head">
         <FileDiff size={14} />
-        <strong>Changes on {task.branch}</strong>
-        {diff.data && (
-          <span className="muted small">
-            {diff.data.files.length} file{diff.data.files.length === 1 ? "" : "s"}, +{diff.data.insertions} −
-            {diff.data.deletions}
-          </span>
-        )}
+        {/* The branch is in the drawer header already; here it's the tooltip. */}
+        <strong title={task.branch}>Changes</strong>
+        {diff.data &&
+          (diff.data.files.length === 0 ? (
+            <span className="muted small">none against {diff.data.baseBranch} yet</span>
+          ) : (
+            <span className="muted small">
+              {diff.data.files.length} file{diff.data.files.length === 1 ? "" : "s"}, +{diff.data.insertions} −
+              {diff.data.deletions}
+            </span>
+          ))}
         <span className="spacer" />
         {/* Worth having even when the diff is too big to read here — the path is the way into it. */}
         <IconButton label={`Copy ${path}`} icon={Copy} size="sm" onClick={copyPath} />
@@ -58,7 +62,8 @@ function DiffFiles({ diff }: { diff: TaskDiff }) {
   const [openPath, setOpenPath] = useState<string | null>(null);
   const hunks = useMemo(() => splitPatch(diff.patch), [diff.patch]);
 
-  if (diff.files.length === 0) return <p className="muted small">Nothing has changed against {diff.baseBranch} yet.</p>;
+  // The header says "none"; an empty body would only repeat it.
+  if (diff.files.length === 0) return null;
 
   return (
     <>

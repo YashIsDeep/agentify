@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { RunView, StageDef, TaskDetail, WorkflowDef } from "@wm/shared";
-import { Activity, Archive, FileText, Settings2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Activity, Archive, FileText, MessageCircleQuestion, MessagesSquare, Play, Settings2, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApiError } from "../api";
@@ -22,10 +22,15 @@ import { Timeline } from "./Timeline";
 export function TaskDrawer({
   taskId,
   workflows,
+  openChatRunId,
+  onChatOpened,
   onClose,
 }: {
   taskId: string;
   workflows: WorkflowDef[];
+  /** A run whose chat to open as soon as the task has loaded. */
+  openChatRunId: number | null;
+  onChatOpened: () => void;
   onClose: () => void;
 }) {
   const api = useApi();
@@ -56,6 +61,8 @@ export function TaskDrawer({
           detail={query.data}
           workflow={workflows.find((workflow) => workflow.id === query.data.task.workflowId)}
           now={now}
+          openChatRunId={openChatRunId}
+          onChatOpened={onChatOpened}
           onClose={onClose}
         />
       )}
@@ -67,13 +74,19 @@ function DrawerContent({
   detail,
   workflow,
   now,
+  openChatRunId,
+  onChatOpened,
   onClose,
 }: {
   detail: TaskDetail;
   workflow: WorkflowDef | undefined;
   now: number;
+  openChatRunId: number | null;
+  onChatOpened: () => void;
   onClose: () => void;
 }) {
+  const api = useApi();
+  const action = useTaskAction();
   const [moveTo, setMoveTo] = useState<StageDef | null>(null);
   const [archiving, setArchiving] = useState(false);
   // The chat lives here, not in the stage panel, so runs from earlier stages open it too.
@@ -83,22 +96,46 @@ function DrawerContent({
   const stage = workflow?.stages.find((s) => s.id === task.currentStageId);
   const archived = task.status === "archived";
 
+  useEffect(() => {
+    if (openChatRunId === null) return;
+    // The question may have been answered elsewhere in the meantime; then the drawer alone is right.
+    if (detail.visits.some((v) => v.runs.some((run) => run.id === openChatRunId))) setChatRunId(openChatRunId);
+    onChatOpened();
+  }, [openChatRunId, detail.visits, onChatOpened]);
+
+  // What the task is waiting on you for, one click from the header however far the stage panel scrolled.
+  // The stage panel doesn't repeat these; a standalone Approval's buttons are in it, right below.
+  const needs = task.badge === "needs-you" ? task.badgeDetail : null;
+  const needsButton = !needs ? null : needs.chatRunId ? (
+    <Button
+      size="sm"
+      variant="primary"
+      icon={needs.reason === "question" ? MessageCircleQuestion : MessagesSquare}
+      onClick={() => setChatRunId(needs.chatRunId ?? null)}
+    >
+      {needs.reason === "question" ? "Answer" : "Review"}
+    </Button>
+  ) : needs.reason === "start" ? (
+    <Button size="sm" variant="primary" icon={Play} loading={action.isPending} onClick={() => action.mutate(() => api.startActions(task.id))}>
+      Start
+    </Button>
+  ) : null;
+
   return (
     <>
+      {/* The board already names the workflow and the stepper the stage; the header is the task and what it needs. */}
       <header className="drawer-header">
         <div className="drawer-header-top">
-          <StatusBadge badge={task.badge} detail={task.badgeDetail} />
-          <span className="muted small">
-            {workflow?.name}
-            {stage && ` · ${stage.name}`}
-            {visit && !archived && ` · entered ${relativeTime(visit.enteredAt, now)}`}
-          </span>
-          <span className="spacer" />
+          <h2 className="drawer-title">{task.title}</h2>
+          {needsButton}
           {!archived && <IconButton label="Archive task" icon={Archive} onClick={() => setArchiving(true)} />}
           <IconButton label="Close task" icon={X} onClick={onClose} />
         </div>
-        <h2 className="drawer-title">{task.title}</h2>
-        <TaskMeta task={task} />
+        <div className="drawer-meta">
+          {/* Idle says nothing, and "needs you" is the button above. */}
+          {task.badge !== "idle" && task.badge !== "needs-you" && <StatusBadge badge={task.badge} detail={task.badgeDetail} />}
+          <TaskMeta task={task} />
+        </div>
       </header>
 
       {workflow && (
@@ -112,7 +149,11 @@ function DrawerContent({
                   type="button"
                   disabled={archived || current}
                   onClick={() => setMoveTo(s)}
-                  title={current ? `Currently in ${s.name}` : `Move to ${s.name}`}
+                  title={
+                    current
+                      ? `In ${s.name}${visit && !archived ? ` since ${relativeTime(visit.enteredAt, now)}` : ""}`
+                      : `Move to ${s.name}`
+                  }
                 >
                   <span className="step-dot" />
                   <span className="step-label">{s.name}</span>
@@ -124,11 +165,7 @@ function DrawerContent({
       )}
 
       <div className="drawer-scroll">
-        {task.description && (
-          <div className="markdown description">
-            <Markdown remarkPlugins={[remarkGfm]}>{task.description}</Markdown>
-          </div>
-        )}
+        {/* The current stage's runs and approvals come first: they are what needs acting on. */}
         {!archived && stage && visit && (
           <StagePanel
             detail={detail}
@@ -139,6 +176,7 @@ function DrawerContent({
             onOpenChat={(run) => setChatRunId(run.id)}
           />
         )}
+        {task.description && <Description text={task.description} />}
 
         <Tabs
           label="Task"
@@ -171,6 +209,35 @@ function DrawerContent({
         />
       )}
     </>
+  );
+}
+
+/**
+ * A long brief would push the Activity tabs off screen, so it opens as a few lines with the rest
+ * one click away.
+ */
+function Description({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [long, setLong] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    // Measured while clamped: anything past the clamp is the "more".
+    if (element && !expanded) setLong(element.scrollHeight > element.clientHeight + 4);
+  }, [text, expanded]);
+
+  return (
+    <div className="description">
+      <div ref={ref} className={cls("markdown", !expanded && "description-clamped", long && !expanded && "description-faded")}>
+        <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+      </div>
+      {long && (
+        <Button variant="link" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Show less" : "Show more"}
+        </Button>
+      )}
+    </div>
   );
 }
 

@@ -17,10 +17,11 @@ import {
 import { useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
-import { clockTime, cls, runDuration, usageSummary } from "../lib/format";
+import { clockTime, cls, runDuration, usageCost, usageSummary } from "../lib/format";
 import { actionList, describeAgent, isActiveRun, isAgentRun, isApprovalRun, isAwaitingApproval, isRetryable, isSkippable } from "../lib/runs";
 import { Button, IconButton, Tag } from "../ui";
 import { RetryDialog, SendBackDialog } from "./dialogs";
+import { ReviewArtifacts } from "./ArtifactsPanel";
 import { DiffPanel } from "./DiffPanel";
 import { RunLog } from "./RunLog";
 import { RunStatusIcon, runStatusLabel } from "./StatusBadge";
@@ -69,6 +70,8 @@ export function StagePanel({
   const runs = actionList(visit);
   const toStart = stage.bindings.filter((binding) => binding.enabled);
   const switchedOff = stage.bindings.filter((binding) => !binding.enabled);
+  // A stage with no actions (a Backlog, a Done) has nothing to show; an empty box would only say so.
+  if (runs.length === 0 && stage.bindings.length === 0) return null;
   const stageName = (stageId: string) => stages.find((candidate) => candidate.id === stageId)?.name ?? "another stage";
 
   const handlers: RunHandlers = {
@@ -92,15 +95,18 @@ export function StagePanel({
 
   return (
     <section className="stage-panel">
-      <div className="section-heading">
-        <h3>{stage.name}</h3>
-        {visit.attempt > 1 && <Tag>attempt {visit.attempt}</Tag>}
-        {visit.completedAt && (
-          <Tag tone="success" icon={CircleCheck}>
-            complete
-          </Tag>
-        )}
-      </div>
+      {/* The stepper above already names the stage; a heading only earns its line when it adds something. */}
+      {(visit.attempt > 1 || visit.completedAt) && (
+        <div className="section-heading">
+          <h3>{stage.name}</h3>
+          {visit.attempt > 1 && <Tag>attempt {visit.attempt}</Tag>}
+          {visit.completedAt && (
+            <Tag tone="success" icon={CircleCheck}>
+              complete
+            </Tag>
+          )}
+        </div>
+      )}
 
       {runs.length > 0 ? (
         <ol className="actions">
@@ -108,33 +114,24 @@ export function StagePanel({
             <RunItem key={run.id} run={run} index={index} {...handlers} />
           ))}
         </ol>
-      ) : toStart.length > 0 ? (
-        <>
-          <ol className="actions">
-            {toStart.map((binding, index) => (
-              <li key={binding.id} className="run run-pending">
-                <div className="run-row">
-                  <span className="run-toggle">
-                    <span className="chevron-space" />
-                    {binding.actionType === APPROVAL_ACTION ? <Hand size={14} /> : <Circle size={14} />}
-                    <span className="run-label">
-                      <span className="action-index">{index + 1}.</span> {binding.label}
-                    </span>
-                    <span className="run-type">{binding.actionType}</span>
+      ) : toStart.length > 0 && (
+        // What will run; the header's Start button starts it.
+        <ol className="actions">
+          {toStart.map((binding, index) => (
+            <li key={binding.id} className="run run-pending">
+              <div className="run-row">
+                <span className="run-toggle" title={binding.actionType}>
+                  <span className="chevron-space" />
+                  {binding.actionType === APPROVAL_ACTION ? <Hand size={14} /> : <Circle size={14} />}
+                  <span className="run-label">
+                    <span className="action-index">{index + 1}.</span> {binding.label}
                   </span>
-                  <span className="run-meta">Not started</span>
-                </div>
-              </li>
-            ))}
-          </ol>
-          <div className="action-bar">
-            <Button variant="primary" icon={Play} loading={action.isPending} onClick={() => action.mutate(() => api.startActions(task.id))}>
-              Start
-            </Button>
-          </div>
-        </>
-      ) : (
-        <p className="muted small">No actions in this stage.</p>
+                </span>
+                <span className="run-meta">Not started</span>
+              </div>
+            </li>
+          ))}
+        </ol>
       )}
 
       {switchedOff.length > 0 && (
@@ -173,16 +170,23 @@ function RunItem({
   const chat = isAgentRun(run) && hasLog;
   const sendBackTo = typeof run.config.sendBackTo === "string" && run.config.sendBackTo ? run.config.sendBackTo : null;
   const instructions = typeof run.outputs?.instructions === "string" ? run.outputs.instructions : "";
+  const usage = usageSummary(run.usage);
+  const cost = usageCost(run.usage);
+  // The agent and model, or the action type, spelled out beside the label crowded it; it's the tooltip.
+  const what = isAgentRun(run) ? describeAgent(run, task, stageDefaults) : run.actionType;
+  // An agent's question and its review both happen in the chat the header's button opens; the row only
+  // has to stand out.
+  const needsYou = waitingForYou || !!run.question;
 
   return (
-    <li className={cls("run", `run-${run.status}`, waitingForYou && "run-approval")}>
+    <li className={cls("run", `run-${run.status}`, needsYou && "run-needs-you")}>
       <div className="run-row">
         <button
           type="button"
           className="run-toggle"
           onClick={() => (chat ? onOpenChat(run) : setOpen((value) => !value))}
           aria-expanded={chat ? undefined : open}
-          title={chat ? "Open the agent's chat" : undefined}
+          title={chat ? `${what} · open the chat` : what}
           disabled={!hasLog}
         >
           {chat ? (
@@ -196,23 +200,24 @@ function RunItem({
           ) : (
             <span className="chevron-space" />
           )}
-          {waitingForYou ? <Hand size={14} className="run-icon run-icon-approval" /> : <RunStatusIcon status={run.status} />}
+          {run.question ? (
+            <MessageCircleQuestion size={14} className="run-icon run-icon-approval" />
+          ) : waitingForYou ? (
+            <Hand size={14} className="run-icon run-icon-approval" />
+          ) : (
+            <RunStatusIcon status={run.status} />
+          )}
           <span className="run-label">
             <span className="action-index">{index + 1}.</span> {run.label}
           </span>
-          {isAgentRun(run) ? (
-            <Tag tone="accent">{describeAgent(run, task, stageDefaults)}</Tag>
-          ) : (
-            <span className="run-type">{run.actionType}</span>
-          )}
         </button>
-        <span className="run-meta" title={runStatusLabel(run.status)}>
-          {waitingForYou
-            ? "Ready for review"
-            : run.resumeAt
+        {/* Cost rides along with the time; the token counts are in the tooltip. A run waiting on you
+            says so with its highlight and the header's button, so its time is shown like any other. */}
+        <span className="run-meta" title={[runStatusLabel(run.status), usage].filter(Boolean).join(" · ")}>
+          {run.resumeAt
               ? `resets ${clockTime(run.resumeAt, now)}`
               : run.startedAt && !approval
-                ? runDuration(run, now)
+                ? [runDuration(run, now), cost].filter(Boolean).join(" · ")
                 : runStatusLabel(run.status)}
         </span>
         {run.status === "quota-wait" && (
@@ -234,20 +239,16 @@ function RunItem({
           </Button>
         )}
       </div>
-      {waitingForYou && (
+      {/* An agent's instructions, diff and buttons are in its chat; only a standalone Approval decides here. */}
+      {waitingForYou && !chat && (
         <div className="approval">
           {instructions && <p className="approval-text">{instructions}</p>}
+          <ReviewArtifacts taskId={task.id} />
           <DiffPanel task={task} />
           <div className="approval-buttons">
-            {chat ? (
-              <Button size="sm" variant="primary" icon={MessagesSquare} onClick={() => onOpenChat(run)} disabled={busy}>
-                Review & revise
-              </Button>
-            ) : (
-              <Button size="sm" variant="primary" icon={Check} onClick={() => onApprove(run)} disabled={busy}>
-                Approve & continue
-              </Button>
-            )}
+            <Button size="sm" variant="primary" icon={Check} onClick={() => onApprove(run)} disabled={busy}>
+              Approve & continue
+            </Button>
             {sendBackTo && (
               <Button size="sm" icon={Undo2} onClick={() => onSendBack(run, sendBackTo)} disabled={busy}>
                 Send back to {stageName(sendBackTo)}
@@ -256,20 +257,8 @@ function RunItem({
           </div>
         </div>
       )}
-      {/* The question is answered in the chat; here it only has to be impossible to miss. */}
-      {run.question && (
-        <div className="run-question">
-          <MessageCircleQuestion size={14} aria-hidden="true" />
-          The agent is waiting on you
-          <span className="spacer" />
-          <Button size="sm" variant="primary" onClick={() => onOpenChat(run)}>
-            Answer
-          </Button>
-        </div>
-      )}
       {/* The log already ends with the error, so only show it separately while the log is collapsed. */}
       {run.error && run.status !== "cancelled" && !(open && hasLog && !chat) && <div className="run-error">{run.error}</div>}
-      {run.usage && usageSummary(run.usage) && <div className="run-usage">{usageSummary(run.usage)}</div>}
       {open && hasLog && !chat && <RunLog runId={run.id} live={run.status === "running"} />}
     </li>
   );
