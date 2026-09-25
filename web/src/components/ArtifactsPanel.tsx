@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ArtifactInfo } from "@wm/shared";
 import { FileText } from "lucide-react";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useApi } from "../api-context";
 import { cls, fileSize, relativeTime } from "../lib/format";
-import { EmptyState } from "../ui";
+import { Dialog, DialogBody, EmptyState } from "../ui";
 
 export function ArtifactsPanel({ taskId }: { taskId: string }) {
   const api = useApi();
@@ -13,13 +14,6 @@ export function ArtifactsPanel({ taskId }: { taskId: string }) {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const files = list.data ?? [];
   const selected = files.find((file) => file.name === selectedName) ?? files[0];
-
-  const content = useQuery({
-    // modifiedAt in the key refetches when an action rewrites the file.
-    queryKey: ["artifact", taskId, selected?.name, selected?.modifiedAt],
-    queryFn: () => api.artifact(taskId, selected!.name),
-    enabled: !!selected,
-  });
 
   if (list.isLoading) return <p className="muted small panel-pad">Loading artifacts…</p>;
   if (list.error) return <p className="error small panel-pad">{list.error.message}</p>;
@@ -54,24 +48,73 @@ export function ArtifactsPanel({ taskId }: { taskId: string }) {
             <strong>{selected.name}</strong>
             <span className="muted small">updated {relativeTime(selected.modifiedAt)}</span>
           </div>
-          {content.isLoading ? (
-            <p className="muted small">Loading…</p>
-          ) : content.error ? (
-            <p className="error small">{content.error.message}</p>
-          ) : /\.(md|markdown)$/i.test(selected.name) ? (
-            <div className="markdown">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" /> }}
-              >
-                {content.data ?? ""}
-              </Markdown>
-            </div>
-          ) : (
-            <pre className="log artifact-text">{content.data}</pre>
-          )}
+          <ArtifactContent taskId={taskId} file={selected} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The task's artifacts beside a review's diff, so the plan or requirements being signed off can be
+ * read without leaving the chat. Hidden until an action has written one.
+ */
+export function ReviewArtifacts({ taskId }: { taskId: string }) {
+  const api = useApi();
+  const list = useQuery({ queryKey: ["artifacts", taskId], queryFn: () => api.artifacts(taskId) });
+  const [openName, setOpenName] = useState<string | null>(null);
+  const files = list.data ?? [];
+  const open = files.find((file) => file.name === openName);
+  if (files.length === 0) return null;
+
+  return (
+    <div className="diff-panel">
+      <div className="diff-head">
+        <FileText size={14} />
+        <strong>Artifacts</strong>
+        <span className="muted small">
+          {files.length} file{files.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <ul className="diff-files">
+        {files.map((file) => (
+          <li key={file.name}>
+            <button type="button" className="diff-file" aria-haspopup="dialog" onClick={() => setOpenName(file.name)}>
+              <FileText size={13} />
+              <span className="diff-path">{file.name}</span>
+              <span className="muted small">{relativeTime(file.modifiedAt)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {open && (
+        <Dialog title={open.name} size="xl" onClose={() => setOpenName(null)}>
+          <DialogBody>
+            <ArtifactContent taskId={taskId} file={open} />
+          </DialogBody>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+/** One artifact's text: Markdown rendered, anything else as it is. */
+function ArtifactContent({ taskId, file }: { taskId: string; file: ArtifactInfo }) {
+  const api = useApi();
+  const content = useQuery({
+    // modifiedAt in the key refetches when an action rewrites the file.
+    queryKey: ["artifact", taskId, file.name, file.modifiedAt],
+    queryFn: () => api.artifact(taskId, file.name),
+  });
+
+  if (content.isLoading) return <p className="muted small">Loading…</p>;
+  if (content.error) return <p className="error small">{content.error.message}</p>;
+  if (!/\.(md|markdown)$/i.test(file.name)) return <pre className="log artifact-text">{content.data}</pre>;
+  return (
+    <div className="markdown">
+      <Markdown remarkPlugins={[remarkGfm]} components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" /> }}>
+        {content.data ?? ""}
+      </Markdown>
     </div>
   );
 }

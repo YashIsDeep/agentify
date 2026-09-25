@@ -6,6 +6,7 @@ import { useTaskAction } from "../hooks";
 import { actionList, isAwaitingApproval } from "../lib/runs";
 import { Button, Field, Tag } from "../ui";
 import { SendBackDialog } from "./dialogs";
+import { ReviewArtifacts } from "./ArtifactsPanel";
 import { DiffPanel } from "./DiffPanel";
 
 /** Stays visible below the transcript throughout the draft → revise → review loop. */
@@ -75,6 +76,7 @@ export function AgentReview({ run, detail, stages }: { run: RunView; detail: Tas
         {ready && (
           <>
             {instructions && <p className="approval-text agent-review-instructions">{instructions}</p>}
+            <ReviewArtifacts taskId={detail.task.id} />
             <DiffPanel task={detail.task} />
             <Field label="What would you like changed?" tip="Ctrl+Enter (⌘+Enter on a Mac) sends it.">
               <textarea

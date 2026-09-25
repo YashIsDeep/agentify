@@ -5,7 +5,7 @@ import { cls } from "../lib/format";
 import { Button, IconButton } from "./Button";
 import "./dialog.css";
 
-const WIDTH = { sm: 440, md: 540, lg: 660 } as const;
+const WIDTH = { sm: 440, md: 540, lg: 660, xl: 860 } as const;
 
 /**
  * A modal dialog, open for as long as it is mounted: render it conditionally and close it through
