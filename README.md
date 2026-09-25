@@ -10,7 +10,8 @@ npm install
 npm start
 ```
 
-Open `http://127.0.0.1:2712`. Data lives in `%USERPROFILE%\.workflow-manager`.
+Open `http://127.0.0.1:2712`. Data lives in `%USERPROFILE%\.agentify` (an existing `%USERPROFILE%\.workflow-manager` from before the
+rename is still used when `.agentify` doesn't exist).
 
 This is a trusted, single-user local application. Keep it on loopback; do not expose it
 through a tunnel or reverse proxy. Autonomous agents and shell actions run with your OS
@@ -22,7 +23,7 @@ temporary-file protections, including restrictions on linked carry-over paths an
 
 | Env var | Default | |
 |---|---|---|
-| `WM_DATA_DIR` | `~/.workflow-manager` | database, artifacts, transcripts, worktrees |
+| `WM_DATA_DIR` | `~/.agentify` | database, artifacts, transcripts, worktrees |
 | `WM_PORT` | `2712` | `2711` under `npm run dev`, where Vite holds 2712 |
 | `WM_MAX_CONCURRENT_AGENTS` | `3` | cap on concurrent long-running actions |
 

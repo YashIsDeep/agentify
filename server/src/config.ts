@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,7 @@ const DEV_API_PORT = 2711;
  * API steps aside to DEV_API_PORT so Vite can hold UI_PORT.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: { dev?: boolean } = {}): AppConfig {
-  const defaultDataDir = options.dev ? join(REPO_ROOT, ".wm-data") : join(homedir(), ".workflow-manager");
+  const defaultDataDir = options.dev ? join(REPO_ROOT, ".wm-data") : homeDataDir();
   return {
     dataDir: resolve(env.WM_DATA_DIR ?? defaultDataDir),
     host: "127.0.0.1",
@@ -30,6 +31,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: { dev?
     devOriginPorts: [UI_PORT],
     maxConcurrentLongRuns: positiveInt(env.WM_MAX_CONCURRENT_AGENTS, 3),
   };
+}
+
+/**
+ * `~/.agentify`, unless only the pre-rename `~/.workflow-manager` exists. That one is used in place
+ * rather than moved, since the git worktrees inside it record their absolute paths.
+ */
+function homeDataDir(): string {
+  const current = join(homedir(), ".agentify");
+  const legacy = join(homedir(), ".workflow-manager");
+  return !existsSync(current) && existsSync(legacy) ? legacy : current;
 }
 
 function positiveInt(value: string | undefined, fallback: number): number {

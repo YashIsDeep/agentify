@@ -508,7 +508,7 @@ workflow-manager/
 
 - npm workspaces (pnpm not installed).
 - Engine: in-process event bus; `action_runs` table is the durable queue; concurrency limiter.
-- Data dir: `%USERPROFILE%\.workflow-manager\`
+- Data dir: `%USERPROFILE%\.agentify\` (falls back to a pre-rename `.workflow-manager\` when that exists and `.agentify\` doesn't)
   - `db.sqlite`
   - `secrets.json` (connections; never exported with workflows)
   - `tasks/<taskId>/artifacts/` (kept)
