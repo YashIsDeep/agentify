@@ -18,14 +18,19 @@ const APP_TITLE = "Workflow Manager";
 
 /**
  * Active tasks across every workflow, counted by what they're waiting on, at the foot of the sidebar.
- * Each count opens a list of its tasks; a count of zero isn't shown, and queued tasks aren't counted —
+ * Needs you opens the Open conversations page; the other counts open a list of their tasks. A count
+ * of zero isn't shown (Needs you stays while its page is open), and queued tasks aren't counted —
  * they only wait for a slot.
  */
 export function StatusCounters({
   workflows,
+  conversationsOpen,
+  onOpenConversations,
   onOpenTask,
 }: {
   workflows: WorkflowDef[];
+  conversationsOpen: boolean;
+  onOpenConversations: () => void;
   onOpenTask: (task: TaskSummary) => void;
 }) {
   const api = useApi();
@@ -48,12 +53,26 @@ export function StatusCounters({
   const counts = COUNTERS.map((counter) => ({
     ...counter,
     list: inOrder(counter.badges.flatMap((badge) => byBadge.get(badge) ?? [])),
-  })).filter((counter) => counter.list.length > 0);
+  })).filter((counter) => counter.list.length > 0 || (counter.key === "needs-you" && conversationsOpen));
   if (counts.length === 0) return null;
 
   return (
     <div className="counters" role="group" aria-label="Tasks by status">
-      {counts.map(({ key, name, label, icon: Icon, list }) => (
+      {counts.map(({ key, name, label, icon: Icon, list }) =>
+        key === "needs-you" ? (
+          <button
+            key={key}
+            type="button"
+            className={cls("counter", `counter-${key}`)}
+            aria-label={`${label}: ${list.length}`}
+            aria-current={conversationsOpen ? "page" : undefined}
+            onClick={onOpenConversations}
+          >
+            <Icon size={14} aria-hidden="true" />
+            <span className="counter-name">{name}</span>
+            <span className="counter-count">{list.length}</span>
+          </button>
+        ) : (
         <Menu
           key={key}
           label={label}
@@ -75,12 +94,13 @@ export function StatusCounters({
             onSelect: () => onOpenTask(task),
           }))}
         />
-      ))}
+        ),
+      )}
     </div>
   );
 }
 
-function describe(task: TaskSummary): string {
+export function describe(task: TaskSummary): string {
   const detail = task.badgeDetail;
   if (!detail) return "";
   switch (task.badge) {

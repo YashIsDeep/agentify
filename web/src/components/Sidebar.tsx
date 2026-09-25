@@ -123,6 +123,8 @@ export function Sidebar({
         <div className="sidebar-footer">
           <StatusCounters
             workflows={workflows}
+            conversationsOpen={view === "conversations"}
+            onOpenConversations={go(() => onSelectView("conversations"))}
             onOpenTask={(task) => {
               onOpenTask(task);
               setOpen(false);

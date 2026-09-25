@@ -5,6 +5,7 @@ import { AgentsView } from "./components/AgentsView";
 import { ArchiveView } from "./components/ArchiveView";
 import { Board } from "./components/Board";
 import { ConnectionsView } from "./components/ConnectionsView";
+import { ConversationsView } from "./components/ConversationsView";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TaskDrawer } from "./components/TaskDrawer";
@@ -71,6 +72,8 @@ export function App() {
           <WorkflowsView workflows={list} workflowId={workflow?.id} />
         ) : view === "connections" ? (
           <ConnectionsView />
+        ) : view === "conversations" ? (
+          <ConversationsView workflows={list} onOpenTask={openTask} />
         ) : view === "ui-kit" ? (
           <UiKitView />
         ) : workflow ? (

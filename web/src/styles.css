@@ -110,7 +110,7 @@ button.counter-needs-you {
   color: var(--warn);
 }
 button.counter-needs-you:hover,
-button.counter-needs-you[aria-expanded="true"] {
+button.counter-needs-you[aria-current="page"] {
   background: color-mix(in srgb, var(--warn) 22%, var(--warn-soft));
 }
 button.counter-stopped {
@@ -1630,6 +1630,21 @@ button.counter-stopped[aria-expanded="true"] {
   animation: pop-in 0.22s var(--ease);
 }
 
+/* Open conversations: the chat window's two columns, filling the page below its title. */
+.convo {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  flex: 1;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.convo .chat-list ul {
+  padding-top: 8px;
+}
+
 .chat-list {
   display: flex;
   flex-direction: column;
@@ -2282,6 +2297,17 @@ button.counter-stopped[aria-expanded="true"] {
   }
   .chat-list {
     display: none;
+  }
+  /* Here the list is the queue, so it stays, as a short strip above the conversation. */
+  .convo {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .convo .chat-list {
+    display: flex;
+    max-height: 148px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 }
 

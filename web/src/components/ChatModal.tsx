@@ -141,7 +141,7 @@ export function ChatModal({
   );
 }
 
-function Transcript({ run, now, archived }: { run: RunView; now: number; archived: boolean }) {
+export function Transcript({ run, now, archived }: { run: RunView; now: number; archived: boolean }) {
   const api = useApi();
   const log = useQuery({ queryKey: ["runLog", run.id], queryFn: () => api.runLog(run.id), staleTime: 0 });
   const [raw, setRaw] = useState(false);
