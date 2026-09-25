@@ -17,6 +17,8 @@ through a tunnel or reverse proxy. Autonomous agents and shell actions run with 
 account's access, including access to the local API. Workspaces and approval steps organize
 work; they do not isolate a hostile local process. Use a separate OS account or VM for
 untrusted repositories and agents. See [the security review](docs/SECURITY-2026-09-24.md).
+The [filesystem follow-up](docs/SECURITY-2026-09-25.md) documents additional link and
+temporary-file protections, including restrictions on linked carry-over paths and static assets.
 
 | Env var | Default | |
 |---|---|---|
