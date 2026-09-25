@@ -23,6 +23,8 @@ export async function requestJson<T>(url: string, { method = "GET", headers, bod
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
   const response = await http(url, {
     method,
+    // Never forward credentials or private request bodies to a redirected endpoint.
+    redirect: "error",
     headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

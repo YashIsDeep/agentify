@@ -123,12 +123,14 @@ export function issueKey(value: string): string {
   return match[1].toUpperCase();
 }
 
-function normalizeBaseUrl(value: string): string {
-  const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+export function normalizeBaseUrl(value: string): string {
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
   try {
-    return new URL(withScheme).origin;
+    const url = new URL(withScheme);
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("Unsafe URL");
+    return url.origin;
   } catch {
-    throw new Error(`"${value}" is not a valid Jira site URL`);
+    throw new Error("Jira site URL must use HTTPS and must not contain a username or password.");
   }
 }
 

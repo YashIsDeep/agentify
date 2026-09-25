@@ -12,6 +12,7 @@ import {
 } from "@wm/shared";
 import { EngineError } from "../engine/engine";
 import { DEFAULT_CONNECTION_ADAPTERS } from "../integrations";
+import { normalizeBaseUrl } from "../integrations/jira";
 import type { AnyConnectionAdapter, ConnectionAdapter, ConnectionValues, HttpFetch } from "../integrations/types";
 import type { Paths } from "../paths";
 
@@ -189,6 +190,13 @@ function clean(adapter: AnyConnectionAdapter, values: ConnectionValues): Connect
   for (const field of adapter.fields) {
     const value = values[field.name]?.trim();
     if (value) cleaned[field.name] = value;
+  }
+  if (adapter.type === "jira" && cleaned.baseUrl) {
+    try {
+      normalizeBaseUrl(cleaned.baseUrl);
+    } catch (error) {
+      throw new EngineError(error instanceof Error ? error.message : "Invalid Jira site URL");
+    }
   }
   return cleaned;
 }
