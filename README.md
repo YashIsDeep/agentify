@@ -12,6 +12,12 @@ npm start
 
 Open `http://127.0.0.1:2712`. Data lives in `%USERPROFILE%\.workflow-manager`.
 
+This is a trusted, single-user local application. Keep it on loopback; do not expose it
+through a tunnel or reverse proxy. Autonomous agents and shell actions run with your OS
+account's access, including access to the local API. Workspaces and approval steps organize
+work; they do not isolate a hostile local process. Use a separate OS account or VM for
+untrusted repositories and agents. See [the security review](docs/SECURITY-2026-09-24.md).
+
 | Env var | Default | |
 |---|---|---|
 | `WM_DATA_DIR` | `~/.workflow-manager` | database, artifacts, transcripts, worktrees |
@@ -66,6 +72,12 @@ ask, and the approval it waits on when it has finished, where what you send resu
 
 ## Workflows
 
+Shell commands cannot use `{{...}}` interpolation: task text could otherwise become executable
+shell code. Use the supplied `WM_*` environment variables as data instead, such as
+`Write-Output $env:WM_TASK_TITLE` in PowerShell or `printf '%s\n' "$WM_TASK_TITLE"` in Bash.
+For cmd.exe workflows, a script that reads `process.env.WM_TASK_TITLE` avoids cmd expansion
+pitfalls. Existing saved commands using interpolation must be updated before retrying.
+
 The **Workflows** tab edits a workflow's shape: its stages and their order, and each stage's
 list of actions. A task entering a stage runs its actions top to bottom, one at a time. A coding
 agent can be told to **wait for your approval** when it finishes, so nothing below it runs until you
@@ -111,6 +123,9 @@ The **Connections** tab holds the credentials the Jira, Linear and Notion action
 Credentials are stored in `secrets.json` beside the database, never inside it — so the database
 stays safe to copy and a duplicated workflow never carries a token with it. Secrets are write-only:
 once saved, the browser is only told that they are set.
+
+Jira URLs must use HTTPS (a bare hostname defaults to HTTPS). Integration requests refuse
+redirects; configure the final API host directly. API request bodies are limited to 2 MiB.
 
 An integration action can sit unconfigured while it is disabled; enabling one needs a connection,
 and the workflow editor refuses to save until you pick one.
