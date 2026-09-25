@@ -290,7 +290,7 @@ type AgentEvent =
 | Resume | `--resume <id>` | `codex exec resume <id>` | `--session <id>` | `--resume <id>` |
 | Model | `--model` | `-m` | `-m provider/model` | `--model` |
 | Effort | `--effort` | `-c model_reasoning_effort="…"` | `--variant` | — (thinking variants are model ids) |
-| read-only | restricted `--tools` + `--permission-prompts none` | `-s read-only` (resume: `-c sandbox_mode="read-only"`) | `--agent plan` | `--mode ask` |
+| read-only | restricted `--tools` + `--permission-prompts none` + `--allowedTools WebFetch,WebSearch` | `-s read-only` (resume: `-c sandbox_mode="read-only"`) | `--agent plan` | `--mode ask` |
 | autonomous | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--auto` | `--force` |
 
 Flags were verified against each installed CLI (Claude 2.1.267, Codex 0.154.0, OpenCode 1.18.30,

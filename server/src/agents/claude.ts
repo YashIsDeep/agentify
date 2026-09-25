@@ -3,8 +3,10 @@ import { epochMs } from "./limits";
 import { execCli } from "./resolve";
 import { type AgentAdapter, type AgentEvent, firstVersion, parseJsonLine, truncate } from "./types";
 
+/** Read-only tools that ask for permission by default, so a read-only run must pre-approve them. */
+const WEB_TOOLS = ["WebFetch", "WebSearch"];
 /** Tools that can't modify anything; used for read-only runs. */
-const READ_ONLY_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
+const READ_ONLY_TOOLS = ["Read", "Glob", "Grep", ...WEB_TOOLS];
 
 export const claudeAdapter: AgentAdapter = {
   id: "claude",
@@ -23,6 +25,9 @@ export const claudeAdapter: AgentAdapter = {
 
   buildSpawn(invocation) {
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    // Pre-approved tools: an unattended run has nobody to answer a permission prompt, and
+    // --permission-prompts none denies anything that would ask. Being in --tools is not enough.
+    const allowed: string[] = [];
     if (invocation.askUserUrl) {
       // --strict-mcp-config so the user's own MCP servers don't join an unattended run.
       // `timeout` is Claude Code's per-call limit for this server: its 60s default otherwise ends
@@ -30,9 +35,7 @@ export const claudeAdapter: AgentAdapter = {
       const server = { type: "http", url: invocation.askUserUrl, timeout: QUESTION_WAIT_MS };
       const config = { mcpServers: { [MCP_SERVER_NAME]: server } };
       args.push("--mcp-config", JSON.stringify(config), "--strict-mcp-config");
-      // Pre-approve it: an unattended run has nobody to answer a permission prompt, and
-      // --permission-prompts none denies anything that would ask. Being in --tools is not enough.
-      args.push("--allowedTools", ASK_TOOL_QUALIFIED);
+      allowed.push(ASK_TOOL_QUALIFIED);
     }
     if (invocation.autonomy === "autonomous") {
       args.push("--dangerously-skip-permissions");
@@ -41,7 +44,9 @@ export const claudeAdapter: AgentAdapter = {
       // "save result as artifact"; a read-only tool set keeps the answer in the final message.
       const tools = [...READ_ONLY_TOOLS, ...(invocation.askUserUrl ? [ASK_TOOL_QUALIFIED] : [])];
       args.push("--tools", tools.join(","), "--permission-prompts", "none");
+      allowed.push(...WEB_TOOLS);
     }
+    if (allowed.length) args.push("--allowedTools", allowed.join(","));
     if (invocation.model) args.push("--model", invocation.model);
     if (invocation.effort) args.push("--effort", invocation.effort);
     if (invocation.resumeSessionId) args.push("--resume", invocation.resumeSessionId);

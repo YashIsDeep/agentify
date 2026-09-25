@@ -227,7 +227,7 @@ describe("which agents can be asked", () => {
     // Without this the read-only allowlist would silently exclude the ask tool.
     expect(args).toContain(`--tools ${["Read", "Glob", "Grep", "WebFetch", "WebSearch", ASK_TOOL_QUALIFIED].join(",")}`);
     // And without this the tool prompts for permission, which --permission-prompts none denies.
-    expect(args).toContain(`--allowedTools ${ASK_TOOL_QUALIFIED}`);
+    expect(args).toContain(`--allowedTools ${[ASK_TOOL_QUALIFIED, "WebFetch", "WebSearch"].join(",")}`);
     // Without this Claude Code abandons the question after its 60s default and the agent moves on.
     const spawn = claudeAdapter.buildSpawn(invocation).args;
     const config = JSON.parse(spawn[spawn.indexOf("--mcp-config") + 1] ?? "{}");

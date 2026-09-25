@@ -79,12 +79,15 @@ describe("claude adapter", () => {
     expect(readOnly.stdin).toBe("Do the thing");
     expect(readOnly.args).toEqual(expect.arrayContaining(["-p", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none"]));
     expect(readOnly.args[readOnly.args.indexOf("--tools") + 1]).toBe("Read,Glob,Grep,WebFetch,WebSearch");
+    // WebFetch and WebSearch ask for permission by default, which --permission-prompts none denies.
+    expect(readOnly.args[readOnly.args.indexOf("--allowedTools") + 1]).toBe("WebFetch,WebSearch");
     expect(readOnly.args).not.toContain("--dangerously-skip-permissions");
     expect(readOnly.args).not.toContain("--effort");
 
     const autonomous = claudeAdapter.buildSpawn(invocation({ autonomy: "autonomous", model: "opus", effort: "max", resumeSessionId: "s-1" }));
     expect(autonomous.args).toEqual(expect.arrayContaining(["--dangerously-skip-permissions", "--model", "opus", "--effort", "max", "--resume", "s-1"]));
     expect(autonomous.args).not.toContain("--tools");
+    expect(autonomous.args).not.toContain("--allowedTools");
   });
 });
 
