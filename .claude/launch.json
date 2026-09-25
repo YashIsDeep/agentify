@@ -27,6 +27,15 @@
         "set WM_DATA_DIR=C:/code/wm-poker-e2e-data&& set WM_PORT=2813&& npm run start -w server"
       ],
       "port": 2813
+    },
+    {
+      "name": "workflow-manager-ux-review",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set WM_DATA_DIR=C:/code/wm-ux-data&& set WM_PORT=2814&& npm run start -w server"
+      ],
+      "port": 2814
     }
   ]
 }
