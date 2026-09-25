@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Hono } from "hono";
+import { assertNoSymlinks } from "../paths";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -32,6 +33,12 @@ export function serveWeb(app: Hono, distDir: string): void {
     const target = resolve(distDir, `.${pathname}`);
     const rel = relative(distDir, target);
     const inside = rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+    try {
+      if (inside) assertNoSymlinks(distDir, target);
+      assertNoSymlinks(distDir, indexFile);
+    } catch {
+      return c.notFound();
+    }
     const file = inside && existsSync(target) && statSync(target).isFile() ? target : indexFile;
     if (!existsSync(file)) return next();
 

@@ -1,8 +1,9 @@
-import { existsSync, statSync } from "node:fs";
+import { constants, existsSync, lstatSync, statSync } from "node:fs";
 import { copyFile, mkdir, symlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { git, gitSucceeds, slugify } from "../lib/git";
+import { assertNoSymlinks } from "../paths";
 import type { ActionDefinition, RunLog } from "./types";
 
 const configSchema = z.object({
@@ -89,7 +90,9 @@ async function carryOver(repo: string, worktreePath: string, list: string, log: 
       continue;
     }
     // A tracked file of the same name, or an earlier run of this action, got there first.
-    if (existsSync(destination)) continue;
+    // lstat also sees dangling links: never overwrite a pre-existing directory entry.
+    if (lstatSync(destination, { throwIfNoEntry: false })) continue;
+    assertNoSymlinks(worktreePath, destination);
     try {
       await mkdir(dirname(destination), { recursive: true });
       if (statSync(source).isDirectory()) {
@@ -101,7 +104,7 @@ async function carryOver(repo: string, worktreePath: string, list: string, log: 
         log(`Linked ${name} into the worktree`);
       } else {
         // Single files are copied so that editing one in the worktree can't rewrite the original.
-        await copyFile(source, destination);
+        await copyFile(source, destination, constants.COPYFILE_EXCL);
         log(`Copied ${name} into the worktree`);
       }
     } catch (err) {
@@ -119,5 +122,6 @@ function resolveInRepo(repo: string, name: string): string {
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`Cannot carry over ${name}: it is outside the repository`);
   }
+  assertNoSymlinks(repo, target);
   return target;
 }

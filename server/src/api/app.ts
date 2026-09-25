@@ -31,7 +31,7 @@ import { ZodError, z } from "zod";
 import type { AgentService } from "../agents/service";
 import type { AppConfig } from "../config";
 import { EngineError, type Engine, type InternalEvent } from "../engine/engine";
-import { type Paths, resolveInside } from "../paths";
+import { assertNoSymlinks, type Paths, resolveInside } from "../paths";
 import type { ConnectionService } from "../services/connections";
 import { taskDiff } from "../services/diff";
 import type { QuestionService } from "../services/questions";
@@ -185,11 +185,21 @@ export function createApp({
   // ---- artifacts
   app.get("/api/tasks/:id/artifacts", async (c) => {
     const dir = paths.artifactDir(engine.getTask(c.req.param("id")).id);
+    try {
+      assertNoSymlinks(dir);
+    } catch {
+      throw new EngineError("Invalid artifact directory");
+    }
     if (!existsSync(dir)) return c.json([]);
     const files: ArtifactInfo[] = [];
     for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
       if (!entry.isFile()) continue;
       const file = join(entry.parentPath, entry.name);
+      try {
+        assertNoSymlinks(dir, file);
+      } catch {
+        throw new EngineError("Invalid artifact name");
+      }
       const info = await stat(file);
       files.push({ name: relative(dir, file).split(sep).join("/"), size: info.size, modifiedAt: info.mtimeMs });
     }

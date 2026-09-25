@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createWorkspaceSchema, workspaceSchema, type WorkspaceInfo } from "@wm/shared";
 import { Hono } from "hono";
@@ -10,6 +10,7 @@ import type { AppConfig } from "./config";
 import { localOnly } from "./api/security";
 import * as s from "./db/schema";
 import { EngineError } from "./engine/engine";
+import { writePrivateFile } from "./lib/atomic-file";
 
 type BootstrapOptions = Parameters<typeof bootstrap>[1];
 const catalogSchema = z.object({ version: z.literal(1), workspaces: z.array(workspaceSchema).min(1) });
@@ -151,9 +152,7 @@ export class WorkspaceManager {
   }
 
   private persist(workspaces: WorkspaceInfo[]): void {
-    const temporary = `${this.catalogFile}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ version: 1, workspaces }, null, 2), { mode: 0o600 });
-    renameSync(temporary, this.catalogFile);
+    writePrivateFile(this.catalogFile, JSON.stringify({ version: 1, workspaces }, null, 2));
   }
 }
 

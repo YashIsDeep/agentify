@@ -45,19 +45,28 @@ export function resolveInside(root: string, name: string): string {
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`Invalid artifact name: ${name}`);
   }
-  // Lexical containment alone follows links outside the artifact root on read/write.
+  assertNoSymlinks(root, target);
+  return target;
+}
+
+/** Reject existing links from a trusted root through a contained target (including the root). */
+export function assertNoSymlinks(root: string, target: string = root): void {
+  const rel = relative(root, target);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`Path is outside ${root}`);
+  }
+  // Lexical containment alone follows links outside the root on read/write.
   // lstat also detects dangling symlinks and Windows junctions. Check the root itself.
   let current = resolve(root);
   for (const part of ["", ...rel.split(sep)]) {
     current = join(current, part);
     try {
-      if (lstatSync(current).isSymbolicLink()) throw new Error(`Invalid artifact name: ${name} (symbolic link)`);
+      if (lstatSync(current).isSymbolicLink()) throw new Error(`Unsafe path: ${current} (symbolic link)`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
       throw error;
     }
   }
-  return target;
 }
 
 export async function purgeTranscripts(paths: Paths, taskId: string): Promise<void> {

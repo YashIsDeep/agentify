@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkspaceInfo } from "@wm/shared";
@@ -40,6 +40,15 @@ const send = (path: string, method: string, body: unknown) => host.app.request(p
 });
 
 describe("workspaces", () => {
+  it("does not overwrite an existing catalog temporary hard link", () => {
+    const sentinel = join(config.dataDir, "sentinel.txt");
+    writeFileSync(sentinel, "UNCHANGED");
+    linkSync(sentinel, join(config.dataDir, "workspaces.json.tmp"));
+    host.workspaces.rename("default", { name: "Renamed" });
+    expect(readFileSync(sentinel, "utf8")).toBe("UNCHANGED");
+    expect(JSON.parse(readFileSync(join(config.dataDir, "workspaces.json"), "utf8")).workspaces[0].name).toBe("Renamed");
+  });
+
   it("limits bodies on catalog and forwarded workspace routes", async () => {
     for (const path of ["/api/workspaces", scoped("default", "/tasks")]) {
       const response = await host.app.request(path, { method: "POST", body: "x".repeat(MAX_REQUEST_BYTES + 1) });

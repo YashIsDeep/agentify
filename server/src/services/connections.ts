@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   type ConnectionInfo,
   type ConnectionTestResult,
@@ -13,6 +13,7 @@ import {
 import { EngineError } from "../engine/engine";
 import { DEFAULT_CONNECTION_ADAPTERS } from "../integrations";
 import { normalizeBaseUrl } from "../integrations/jira";
+import { writePrivateFile } from "../lib/atomic-file";
 import type { AnyConnectionAdapter, ConnectionAdapter, ConnectionValues, HttpFetch } from "../integrations/types";
 import type { Paths } from "../paths";
 
@@ -178,9 +179,7 @@ export class ConnectionService {
 
   /** Written owner-only, and atomically: a half-written secrets file would lose every credential. */
   private write(file: SecretsFile): void {
-    const temporary = `${this.paths.secretsFile}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, this.paths.secretsFile);
+    writePrivateFile(this.paths.secretsFile, `${JSON.stringify(file, null, 2)}\n`);
   }
 }
 

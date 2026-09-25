@@ -123,6 +123,13 @@ describe("worktrees", () => {
     // The copy is the worktree's own, so a task editing it leaves the repository's alone.
     writeFileSync(join(worktreePath!, ".env"), "TOKEN=task\n");
     expect(readFileSync(join(repo, ".env"), "utf8")).toBe("TOKEN=local\n");
+
+    // Re-entering the stage must leave both the task's file and intentional directory link alone.
+    h.engine.moveTask(task.id, h.stageId(workflowId, "Work"));
+    await h.runner.idle();
+    expect(q.latest(task.id, "worktree")?.status).toBe("succeeded");
+    expect(readFileSync(join(worktreePath!, ".env"), "utf8")).toBe("TOKEN=task\n");
+    expect(lstatSync(join(worktreePath!, "node_modules")).isSymbolicLink()).toBe(true);
   });
 
   it("archiving removes the worktree folder with its carried-over links, leaving their targets alone", async () => {

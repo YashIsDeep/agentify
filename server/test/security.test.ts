@@ -1,8 +1,10 @@
-import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shellAction } from "../src/actions/shell";
 import { MAX_REQUEST_BYTES } from "../src/api/security";
+import { serveWeb } from "../src/api/static";
 import { JiraClient } from "../src/integrations/jira";
 import { requestJson } from "../src/integrations/http";
 import { createHarness, type Harness, removeDir } from "./helpers";
@@ -19,6 +21,75 @@ afterEach(async () => {
 });
 
 describe("security boundaries", () => {
+  it("does not overwrite or disclose credentials through a pre-existing temporary hard link", () => {
+    const sentinel = join(h.dataDir, "sentinel.txt");
+    writeFileSync(sentinel, "UNCHANGED");
+    linkSync(sentinel, `${h.paths.secretsFile}.tmp`);
+    h.connections.create({ name: "Test", type: "linear", values: { apiKey: "PRIVATE_TOKEN" } });
+    expect(readFileSync(sentinel, "utf8")).toBe("UNCHANGED");
+    expect(h.connections.list()).toHaveLength(1);
+    expect(readFileSync(h.paths.secretsFile, "utf8")).toContain("PRIVATE_TOKEN");
+  });
+
+  it.each(["source", "destination"])("rejects carry-over through a %s junction", async (side) => {
+    const repo = join(h.dataDir, "repo");
+    const worktree = join(h.dataDir, "worktree");
+    const outside = join(h.dataDir, "outside");
+    for (const dir of [repo, worktree, outside]) mkdirSync(dir);
+    if (side === "source") {
+      writeFileSync(join(outside, "secret.txt"), "PRIVATE_SENTINEL");
+      junction = join(repo, "config");
+    } else {
+      mkdirSync(join(repo, "config"));
+      writeFileSync(join(repo, "config", "secret.txt"), "PRIVATE_SENTINEL");
+      junction = join(worktree, "config");
+    }
+    symlinkSync(outside, junction, process.platform === "win32" ? "junction" : "dir");
+    const workflowId = h.addWorkflow({ name: "Carry-over", description: "", stages: [
+      { name: "Idle" }, { name: "Copy", bindings: [
+        { key: "copy", label: "Copy", actionType: "ensure-worktree", config: { carryOver: "config/secret.txt" } },
+      ] },
+    ] });
+    const task = h.engine.createTask({ workflowId, title: "Carry-over", repoPath: repo });
+    h.engine.setTaskGitInfo(task.id, { branch: "feature", baseBranch: "main", worktreePath: worktree });
+    h.engine.moveTask(task.id, h.stageId(workflowId, "Copy"));
+    await h.runner.idle();
+    const run = h.engine.getTaskDetail(task.id).visits.flatMap(v => v.runs).find(r => r.bindingKey === "copy");
+    expect(run?.status).toBe("failed");
+    const unexpectedCopy = side === "source" ? join(worktree, "config", "secret.txt") : join(outside, "secret.txt");
+    expect(existsSync(unexpectedCopy)).toBe(false);
+  });
+
+  it("does not list files through a linked artifact root", async () => {
+    const workflowId = h.addWorkflow({ name: "Artifacts", description: "", stages: [{ name: "Idle" }] });
+    const task = h.engine.createTask({ workflowId, title: "Linked artifacts" });
+    const outside = join(h.dataDir, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "private-filename.txt"), "PRIVATE_SENTINEL");
+    mkdirSync(h.paths.taskDir(task.id), { recursive: true });
+    junction = h.paths.artifactDir(task.id);
+    symlinkSync(outside, junction, process.platform === "win32" ? "junction" : "dir");
+    const response = await h.app.request(`/api/tasks/${task.id}/artifacts`);
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain("private-filename");
+  });
+
+  it("does not serve static files through junctions", async () => {
+    const dist = join(h.dataDir, "dist");
+    const outside = join(h.dataDir, "outside");
+    mkdirSync(dist);
+    mkdirSync(outside);
+    writeFileSync(join(dist, "index.html"), "APP");
+    writeFileSync(join(outside, "secret.txt"), "PRIVATE_SENTINEL");
+    junction = join(dist, "assets");
+    symlinkSync(outside, junction, process.platform === "win32" ? "junction" : "dir");
+    const app = new Hono();
+    serveWeb(app, dist);
+    const response = await app.request("/assets/secret.txt");
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain("PRIVATE_SENTINEL");
+  });
+
   it("rejects oversized bodies with and without Content-Length", async () => {
     for (const headers of [{}, { "content-length": String(MAX_REQUEST_BYTES + 1) }]) {
       const response = await h.app.request("/api/tasks", {
