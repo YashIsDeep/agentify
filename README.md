@@ -1,4 +1,4 @@
-# Workflow Manager
+# Agentify
 
 Local, single-user app for moving tasks through workflow stages that fire actions
 (coding agents, shell commands, artifacts, JIRA/Linear/Notion updates). Design: [docs/DESIGN.md](docs/DESIGN.md).

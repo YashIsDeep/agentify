@@ -57,7 +57,7 @@ export function mountMcp(app: Hono, questions: QuestionService): void {
     if (runId === undefined) return c.json({ error: "Unknown or expired MCP token" }, 404);
 
     const server = new McpServer(
-      { name: "workflow-manager", version: "1.0.0" },
+      { name: "agentify", version: "1.0.0" },
       { capabilities: { tools: {} }, instructions: "Tools for talking to the person running this workflow." },
     );
 

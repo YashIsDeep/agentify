@@ -14,7 +14,7 @@ const COUNTERS: { key: string; name: string; label: string; icon: LucideIcon; ba
   { key: "stopped", name: "Stopped", label: "Failed, or waiting for a usage limit", icon: TriangleAlert, badges: ["failed", "quota"] },
 ];
 
-const APP_TITLE = "Workflow Manager";
+const APP_TITLE = "Agentify";
 
 /**
  * Active tasks across every workflow, counted by what they're waiting on, at the foot of the sidebar.

@@ -104,7 +104,7 @@ export function Sidebar({
       <aside ref={asideRef} className={cls("sidebar", open && "sidebar-open")}>
         <button className="sidebar-brand" type="button" onClick={go(() => onSelectView("board"))}>
           <Workflow size={19} aria-hidden="true" />
-          <span>Workflow Manager</span>
+          <span>Agentify</span>
         </button>
         <WorkspaceSwitcher />
         <nav className="sidebar-nav" aria-label="Workspace navigation">

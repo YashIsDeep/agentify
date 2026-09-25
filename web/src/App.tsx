@@ -37,7 +37,7 @@ export function App() {
   if (workflows.isLoading) return <Splash title="Loading…" />;
   if (workflows.error) {
     return (
-      <Splash title="Could not reach the Workflow Manager server." action={<Button onClick={() => void workflows.refetch()}>Try again</Button>}>
+      <Splash title="Could not reach the Agentify server." action={<Button onClick={() => void workflows.refetch()}>Try again</Button>}>
         {workflows.error.message}
       </Splash>
     );

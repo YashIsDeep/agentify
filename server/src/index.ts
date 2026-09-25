@@ -7,7 +7,7 @@ const ctx = bootstrapWorkspaces(config);
 ctx.start();
 
 const server = serve({ fetch: ctx.app.fetch, hostname: config.host, port: config.port }, (info) => {
-  console.log(`Workflow Manager listening on http://${config.host}:${info.port}`);
+  console.log(`Agentify listening on http://${config.host}:${info.port}`);
   console.log(`Data directory: ${config.dataDir}`);
 });
 

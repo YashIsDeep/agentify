@@ -1,4 +1,4 @@
-# Workflow Manager — Design
+# Agentify — Design
 
 A local, single-user web app for moving tasks through configurable workflows whose
 stages fire actions (coding agents, JIRA/Linear/Notion updates, shell commands, artifacts).

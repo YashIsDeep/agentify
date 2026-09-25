@@ -1,4 +1,4 @@
-# Workflow Manager — Design system
+# Agentify — Design system
 
 The UI is built from one small kit, `web/src/ui`, on top of one set of tokens, `web/src/ui/tokens.css`.
 Screens compose kit components; they don't style controls of their own. This page says what's in the

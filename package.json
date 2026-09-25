@@ -1,5 +1,5 @@
 {
-  "name": "workflow-manager",
+  "name": "agentify",
   "private": true,
   "type": "module",
   "workspaces": [
