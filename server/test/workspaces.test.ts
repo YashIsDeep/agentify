@@ -9,6 +9,7 @@ import type { AppConfig } from "../src/config";
 import * as s from "../src/db/schema";
 import { insertWorkflow } from "../src/seed/workflows";
 import { bootstrapWorkspaces } from "../src/workspaces";
+import { MAX_REQUEST_BYTES } from "../src/api/security";
 import { removeDir, waitFor } from "./helpers";
 import { releaseGate, resetTestActions, testActions } from "./test-actions";
 
@@ -39,6 +40,13 @@ const send = (path: string, method: string, body: unknown) => host.app.request(p
 });
 
 describe("workspaces", () => {
+  it("limits bodies on catalog and forwarded workspace routes", async () => {
+    for (const path of ["/api/workspaces", scoped("default", "/tasks")]) {
+      const response = await host.app.request(path, { method: "POST", body: "x".repeat(MAX_REQUEST_BYTES + 1) });
+      expect(response.status).toBe(413);
+    }
+  });
+
   it("keeps existing data and paths in the default workspace", async () => {
     await host.close();
     const legacy = bootstrap(config, { registry, seed: false });
