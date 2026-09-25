@@ -107,7 +107,11 @@ export class Runner {
       if (!definition) throw new Error(`Action type "${run.actionType}" is not available`);
       const scope = engine.buildScope(run);
       const onMiss = (expression: string) => misses.add(expression);
-      const parsed = definition.configSchema.safeParse(renderDeep({ ...run.config, ...(run.overrides ?? {}) }, scope, onMiss));
+      const rawConfig = { ...run.config, ...(run.overrides ?? {}) };
+      // Validate shell source before interpolation, including old snapshots and retry overrides.
+      // After rendering, attacker-controlled task text is indistinguishable from trusted code.
+      if (run.actionType === "shell") definition.configSchema.parse(rawConfig);
+      const parsed = definition.configSchema.safeParse(renderDeep(rawConfig, scope, onMiss));
       if (!parsed.success) throw new Error(`Invalid configuration: ${z.prettifyError(parsed.error)}`);
 
       const artifactDir = paths.artifactDir(run.taskId);

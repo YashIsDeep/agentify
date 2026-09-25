@@ -5,7 +5,10 @@ import type { ActionContext, ActionDefinition } from "./types";
 import { extractPatterns } from "./validation";
 
 const configSchema = z.object({
-  command: z.string().min(1),
+  command: z.string().min(1).refine(
+    (command) => !command.includes("{{"),
+    "Shell commands cannot contain template expressions. Read task data through WM_* environment variables instead.",
+  ),
   shell: z.enum(["default", "cmd", "powershell", "bash", "sh"]).default("default"),
   /** Falls back worktree → repo → artifacts when the preferred directory doesn't exist. */
   cwd: z.enum(["worktree", "repo", "artifacts"]).default("worktree"),
@@ -22,7 +25,7 @@ export const shellAction: ActionDefinition<Config> = {
     "Runs a command. Task data is available as WM_* environment variables; write a JSON object to $WM_OUTPUT_FILE to set outputs.",
   configSchema,
   fields: [
-    { name: "command", label: "Command", kind: "textarea", default: "", templated: true, placeholder: "npm test" },
+    { name: "command", label: "Command", kind: "textarea", default: "", placeholder: "npm test", help: "Read task data through WM_* environment variables. Template expressions are not allowed in shell commands." },
     {
       name: "shell",
       label: "Shell",
