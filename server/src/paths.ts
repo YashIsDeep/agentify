@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -44,6 +44,18 @@ export function resolveInside(root: string, name: string): string {
   const rel = relative(root, target);
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`Invalid artifact name: ${name}`);
+  }
+  // Lexical containment alone follows links outside the artifact root on read/write.
+  // lstat also detects dangling symlinks and Windows junctions. Check the root itself.
+  let current = resolve(root);
+  for (const part of ["", ...rel.split(sep)]) {
+    current = join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) throw new Error(`Invalid artifact name: ${name} (symbolic link)`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
   }
   return target;
 }
