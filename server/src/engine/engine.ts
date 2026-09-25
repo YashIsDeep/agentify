@@ -1142,9 +1142,13 @@ function computeBadge(
   if (task.status === "archived") return { badge: "archived", detail: null };
   // Before "running": a blocked agent is technically running, but it is waiting on you.
   const asking = latest.find((run) => run.question);
-  if (asking) return { badge: "needs-you", detail: { label: asking.label, reason: "question" } };
+  if (asking) return { badge: "needs-you", detail: { label: asking.label, reason: "question", chatRunId: asking.id } };
   const approval = latest.find((run) => run.status === "awaiting-approval");
-  if (approval) return { badge: "needs-you", detail: { label: approval.label, reason: "approval" } };
+  if (approval) {
+    // An agent's review happens in its chat; a standalone Approval action has none.
+    const chat = approval.actionType === CODING_AGENT_ACTION && { chatRunId: approval.id };
+    return { badge: "needs-you", detail: { label: approval.label, reason: "approval", ...chat } };
+  }
   const running = latest.find((run) => run.status === "running");
   if (running) return { badge: "running", detail: { label: running.label } };
   const limited = latest

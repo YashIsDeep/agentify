@@ -51,6 +51,8 @@ export interface BadgeDetail {
   label: string;
   /** Needs-you only: an agent's question, an approval, or a stage whose actions were never started. */
   reason?: "question" | "approval" | "start";
+  /** Needs-you only: the agent run whose chat is where you answer or review. Absent without one. */
+  chatRunId?: number;
   /** Quota only: whose limit, and when the run tries again. */
   agent?: AgentId | null;
   resetAt?: number;

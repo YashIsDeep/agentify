@@ -71,6 +71,8 @@ describe("engine", () => {
     expect(q.latest(task.id, "next")?.status).toBe("waiting");
     // Rendered when the approval started waiting, so it describes the task as it stands.
     expect(check.outputs).toEqual({ instructions: "Check hello Widget" });
+    // A standalone Approval has no chat to open.
+    expect(q.detail(task.id).task.badgeDetail).not.toHaveProperty("chatRunId");
     expect(q.detail(task.id).task).toMatchObject({
       badge: "needs-you",
       badgeDetail: { label: "Check", reason: "approval" },

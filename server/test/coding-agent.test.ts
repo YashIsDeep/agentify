@@ -251,7 +251,11 @@ describe("coding-agent action", () => {
     );
     expect(waiting.outputs?.instructions).toBe("Check Widget");
     expect(artifact(task.id, "result.md")).toContain("codex fresh");
-    expect(q.detail(task.id).task).toMatchObject({ badge: "needs-you", badgeDetail: { label: "Agent", reason: "approval" } });
+    expect(q.detail(task.id).task).toMatchObject({
+      badge: "needs-you",
+      // Its review happens in its chat, so the sidebar list opens that.
+      badgeDetail: { label: "Agent", reason: "approval", chatRunId: waiting.id },
+    });
     // Nothing below it has moved: the stage is still on this action.
     expect(q.visitDone(task.id)).toBe(false);
     expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
