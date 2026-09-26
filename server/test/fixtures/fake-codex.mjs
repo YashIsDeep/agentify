@@ -1,5 +1,6 @@
 // Minimal stand-in for `codex exec --json`, driven by keywords in the prompt (FAIL, HANG, LIMIT).
 import { writeFileSync } from "node:fs";
+import { reviewResponse } from "./review-response.mjs";
 
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
@@ -49,12 +50,12 @@ const access = args.includes("--dangerously-bypass-approvals-and-sandbox") ? "au
 const effort = args.find((arg) => arg.startsWith("model_reasoning_effort="))?.split("=")[1]?.replaceAll('"', "") ?? "default";
 // A ticket-drafting prompt gets the JSON it asks for, echoing what it was given.
 const ticket = prompt.includes("<ticket>") ? prompt.slice(prompt.indexOf("<ticket>") + 8, prompt.indexOf("</ticket>")).trim() : null;
-const text = ticket
+const text = reviewResponse(prompt) ?? (ticket
   ? JSON.stringify({
       title: `Drafted: ${ticket.match(/^Summary: (.*)$/m)?.[1] ?? ""}`,
       description: `model:${flag("-m") ?? "default"} | access:${access} | effort:${effort}\n\n${ticket}`,
     })
-  : `codex ${resume ? `resumed ${sessionId}` : "fresh"} | model:${flag("-m") ?? "default"} | access:${access} | keys:${keys} | effort:${effort} | prompt:${prompt}`;
+  : `codex ${resume ? `resumed ${sessionId}` : "fresh"} | model:${flag("-m") ?? "default"} | access:${access} | keys:${keys} | effort:${effort} | prompt:${prompt}`);
 emit({ type: "item.completed", item: { id: "item_2", type: "agent_message", text } });
 emit({ type: "turn.completed", usage: { input_tokens: 1200, cached_input_tokens: 200, output_tokens: 80 } });
 writeFileSync(flag("-o"), text);

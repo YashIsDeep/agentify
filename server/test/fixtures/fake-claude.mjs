@@ -1,4 +1,5 @@
 // Minimal stand-in for `claude -p --output-format stream-json`.
+import { reviewResponse } from "./review-response.mjs";
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
   console.log("9.9.9 (Claude Code)");
@@ -19,7 +20,7 @@ const resumed = flag("--resume");
 const sessionId = resumed ?? "claude-session-1";
 const keys = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].filter((key) => process.env[key]).join(",") || "none";
 const access = args.includes("--dangerously-skip-permissions") ? "autonomous" : "read-only";
-const text = `claude ${resumed ? `resumed ${sessionId}` : "fresh"} | model:${flag("--model") ?? "default"} | access:${access} | keys:${keys} | effort:${flag("--effort") ?? "default"} | prompt:${prompt}`;
+const text = reviewResponse(prompt) ?? `claude ${resumed ? `resumed ${sessionId}` : "fresh"} | model:${flag("--model") ?? "default"} | access:${access} | keys:${keys} | effort:${flag("--effort") ?? "default"} | prompt:${prompt}`;
 
 emit({ type: "system", subtype: "init", session_id: sessionId });
 emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "README.md" } }] } });

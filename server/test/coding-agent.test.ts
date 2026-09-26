@@ -62,6 +62,42 @@ async function reenter(taskId: string, workflowId: string, attempt: number) {
 }
 
 describe("coding-agent action", () => {
+  it("automatically corrects a rejected plan before exposing its approval", async () => {
+    const workflowId = agentWorkflow({ prompt: "Plan the widget [review:changes]", requireApproval: true });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    const waiting = await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined);
+    expect(artifact(task.id, "result.md")).toBe("# Revised plan\n\nAcceptance criteria: all requested behavior is verified.");
+    expect(waiting.outputs).toMatchObject({ review: { decision: "revised", feedback: "Add acceptance criteria" }, result: expect.stringContaining("# Revised plan") });
+    expect(q.runs(task.id, "agent")).toHaveLength(1);
+    expect(q.detail(task.id).timeline.filter((event) => event.type === "approval.waiting")).toHaveLength(1);
+  });
+
+  it("fails an invalid review without saving it over the document or offering approval", async () => {
+    const workflowId = agentWorkflow({ prompt: "Plan [review:invalid]", requireApproval: true });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
+    expect(artifact(task.id, "result.md")).toBeUndefined();
+    expect(q.detail(task.id).timeline.some((event) => event.type === "approval.waiting")).toBe(false);
+  });
+
+  it("offers the code reviewer's final implementation for approval", async () => {
+    const workflowId = agentWorkflow({ requireApproval: true, autonomy: "autonomous", saveResultAs: "" });
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    const waiting = await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined);
+    expect(waiting.outputs).toMatchObject({ result: "Final implementation with reviewer fixes and passing checks.", review: { decision: "fixed" } });
+    const log = (await (await h.app.request(`/api/runs/${waiting.id}/log`)).json()) as RunLogLine[];
+    expect(log.filter((line) => line.kind === "message").at(-1)?.text).toBe(waiting.outputs?.result);
+    expect(log.filter((line) => line.kind === "message").some((line) => line.text.startsWith('{"decision"'))).toBe(false);
+  });
+
+  it("supports explicitly opting out of automatic review", async () => {
+    const workflowId = agentWorkflow({ requireApproval: true, reviewBeforeApproval: false, prompt: "Plan [review:changes]" });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
+    expect(artifact(task.id, "result.md")).toContain("codex fresh");
+    expect(q.latest(task.id, "agent")?.outputs?.review).toBeUndefined();
+  });
+
   it("runs the agent, saves its final message, and records session and usage", async () => {
     const workflowId = agentWorkflow({ autonomy: "autonomous" });
     // An autonomous agent needs somewhere real to work; without a repo the action refuses to run, and
@@ -286,7 +322,11 @@ describe("coding-agent action", () => {
     const log = (await (await h.app.request(`/api/runs/${again.id}/log`)).json()) as RunLogLine[];
     expect(log).toContainEqual(expect.objectContaining({ kind: "answer", text: "Use fewer words" }));
     // A revision sends your words and nothing else, and that is what the transcript records.
-    expect(log.filter((line) => line.kind === "prompt").map((line) => line.text)).toEqual(["Implement Widget", "Use fewer words"]);
+    const prompts = log.filter((line) => line.kind === "prompt").map((line) => line.text);
+    expect(prompts).toEqual([
+      "Implement Widget", expect.stringContaining("Review the following document independently"),
+      "Use fewer words", expect.stringContaining("Requested changes:\nUse fewer words"),
+    ]);
 
     expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
     expect((await post(`/api/runs/${again.id}/request-changes`, { note: "Now add a concrete example" })).status).toBe(200);

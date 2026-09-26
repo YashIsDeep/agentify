@@ -270,7 +270,7 @@ Then reply with only the Markdown requirements document, nothing before it, cont
             config: codingAgent({
               autonomy: "autonomous",
               continueSession: true,
-              approval: "Look over the change in {{task.worktreePath}} before it goes to review.",
+              approval: "Review the final implementation in {{task.worktreePath}} after the agent has reviewed and fixed it.",
               prompt: `Implement the following task in this repository.
 
 Task: {{task.title}}
@@ -389,7 +389,7 @@ Reply with only a Markdown report: reproduction steps, expected vs actual behavi
             config: codingAgent({
               autonomy: "autonomous",
               continueSession: true,
-              approval: "Look over the fix in {{task.worktreePath}} before it goes to review.",
+              approval: "Review the final fix in {{task.worktreePath}} after the agent has reviewed and corrected it.",
               prompt: `Fix this bug in the repository.
 
 Bug: {{task.title}}

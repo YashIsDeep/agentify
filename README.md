@@ -25,7 +25,6 @@ temporary-file protections, including restrictions on linked carry-over paths an
 |---|---|---|
 | `WM_DATA_DIR` | `~/.agentify` | database, artifacts, transcripts, worktrees |
 | `WM_PORT` | `2712` | `2711` under `npm run dev`, where Vite holds 2712 |
-| `WM_MAX_CONCURRENT_AGENTS` | `3` | cap on concurrent long-running actions |
 
 `npm start` builds the web app and serves it, with the API, from that address.
 
@@ -86,6 +85,16 @@ list of actions. A task entering a stage runs its actions top to bottom, one at 
 agent can be told to **wait for your approval** when it finishes, so nothing below it runs until you
 approve — or you ask for changes and the same agent picks them up. A standalone **Approval** action
 is for checkpoints that follow no agent, and moving on is just a *Move to stage* action at the end. Edits are a local draft until you press **Save**.
+
+**Automatic review before approval.** Coding-agent actions that wait for approval now run an
+independent review session first, using the same agent and model. Saved documents (or read-only
+results) are reviewed with a structured verdict: approved documents go straight to you; requested
+corrections go back to the author, and the revised document comes to you. For implementation actions
+without a saved document, the reviewer fixes the code and runs relevant checks before presenting
+the final implementation. Review feedback stays in the transcript; it is never saved over the
+document. Invalid reviews or blocked fixes fail the action instead of asking you to approve
+unfinished work. Quota waits preserve the review or revision phase. This applies to existing
+approval-enabled actions too; turn off **Have an agent review and fix the work first** to opt out.
 
 **Reviewing and revising agent work.** Open the task and click **Review & revise** when the result
 is ready. The feedback box stays below the chat: type what you want changed and click **Request

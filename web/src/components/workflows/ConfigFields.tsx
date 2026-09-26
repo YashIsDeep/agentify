@@ -74,7 +74,7 @@ export function ConfigFields({
       key={field.name}
       note={note}
       field={field}
-      value={config[field.name]}
+      value={config[field.name] ?? (field.name === "reviewBeforeApproval" ? field.default : undefined)}
       stages={stages}
       connections={usable}
       // The model list depends on the agent chosen in this same form, the effort list on both.

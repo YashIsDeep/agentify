@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, resolveAgentChoice } from "@wm/shared";
 import { z } from "zod";
 import { runAgent } from "../agents/run";
+import { reviewResult, type ReviewCheckpoint, type ReviewedResult } from "../agents/review";
 import type { AgentEvent } from "../agents/types";
 import type { TaskRow } from "../db/schema";
 import { resolveInside } from "../paths";
@@ -24,6 +25,8 @@ const configSchema = z.object({
   autonomy: z.enum(["read-only", "autonomous"]).default("read-only"),
   /** Hold the run open when the agent finishes: nothing below it runs until you approve. */
   requireApproval: z.boolean().default(false),
+  /** Review and apply corrections before offering the final work for approval. */
+  reviewBeforeApproval: z.boolean().default(true),
   approvalInstructions: z.string().default(""),
   /** A stage id in the same workflow; empty offers no Send back at the approval. */
   sendBackTo: z.string().default(""),
@@ -102,7 +105,15 @@ export const codingAgentAction: ActionDefinition<Config> = {
       kind: "boolean",
       // New editor actions start with review enabled; the schema keeps existing configs opt-in.
       default: true,
-      help: "Review the result and ask for revisions until you approve. Nothing after it runs until then.",
+      help: "Approve the final result and ask for revisions. Nothing after it runs until then.",
+    },
+    {
+      name: "reviewBeforeApproval",
+      label: "Have an agent review and fix the work first",
+      kind: "boolean",
+      default: true,
+      dependsOn: "requireApproval",
+      help: "A separate session reviews the work using this agent and model. Document feedback goes back to the author; code reviewers fix the implementation. Only the final work waits for you.",
     },
     {
       name: "approvalInstructions",
@@ -187,12 +198,13 @@ export const codingAgentAction: ActionDefinition<Config> = {
       );
     }
 
+    const checkpoint = run.outputs?.reviewCheckpoint as ReviewCheckpoint | undefined;
     let prompt = config.prompt;
     let resumeSessionId: string | null = null;
     // Changes asked for at this run's own approval: your words are the prompt, and the agent picks
     // the session it just used back up, so one run stays one conversation.
     const followUp = run.followUp?.trim();
-    if (followUp) {
+    if (!checkpoint && followUp) {
       log({ kind: "answer", stream: "info", text: followUp });
       if (run.sessionId && run.outputs?.agent === agent) {
         resumeSessionId = run.sessionId;
@@ -203,12 +215,12 @@ export const codingAgentAction: ActionDefinition<Config> = {
         prompt = previous ? `Your previous answer was:\n\n${previous}\n\n---\n\n${followUp}` : followUp;
         log(`Starting a fresh ${adapter.label} session with your changes`);
       }
-    } else if (run.sessionId && run.outputs?.agent === agent) {
+    } else if (!checkpoint && run.sessionId && run.outputs?.agent === agent) {
       // A usage limit parked this very run after its session had started, so pick that session back up.
       resumeSessionId = run.sessionId;
       prompt = CONTINUE_AFTER_LIMIT;
       log(`Resuming ${adapter.label} session ${run.sessionId} now the usage limit has reset`);
-    } else if (config.continueSession) {
+    } else if (!checkpoint && config.continueSession) {
       const previous = services.engine.previousAgentSession(task.id, run.bindingKey, run.id);
       if (previous && previous.agent === agent) {
         resumeSessionId = previous.sessionId;
@@ -224,7 +236,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
     // When a run goes wrong the prompt is as often the culprit as the agent — a template that
     // rendered an artifact as nothing leaves no other trace — and until now it was the one thing
     // the transcript never kept.
-    log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
+    if (!checkpoint) log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
 
     // Only agents that can be pointed at an MCP server per invocation can stop and ask.
     const askUserUrl = adapter.supportsQuestions ? services.questions.endpointFor(run.id) : null;
@@ -242,7 +254,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
     }
     const logEvent = eventLogger(log);
     try {
-      const result = await runAgent({
+      let result: ReviewedResult = checkpoint?.draft ?? await runAgent({
         adapter,
         cli,
         invocation: {
@@ -263,12 +275,49 @@ export const codingAgentAction: ActionDefinition<Config> = {
         onEvent: logEvent,
         onStderr: (line) => log(line, "stderr"),
       });
+      if (result.ok && config.requireApproval && config.reviewBeforeApproval) {
+        const document = !!config.saveResultAs || config.autonomy === "read-only";
+        result = await reviewResult({
+          draft: result,
+          checkpoint,
+          document,
+          context: `${config.prompt}${followUp ? `\n\nRequested changes:\n${followUp}` : ""}`,
+          invoke: async (reviewPrompt, sessionId, phase) => {
+            const logReviewEvent = eventLogger(log);
+            log({ kind: "notice", stream: "info", text: phase === "review"
+              ? "Independent agent review before your approval"
+              : "Author is applying the reviewer's corrections" });
+            log({ kind: "prompt", stream: "info", text: promptForLog(reviewPrompt) });
+            return runAgent({
+              adapter, cli, env, signal,
+              invocation: {
+                prompt: reviewPrompt, model, effort,
+                autonomy: document ? "read-only" : config.autonomy,
+                resumeSessionId: sessionId, cwd,
+                scratchDir: join(services.paths.runsDir(task.id), `${run.id}-${phase}`),
+                // Internal review and correction must not become a user approval conversation.
+                askUserUrl: null,
+              },
+              inactivityTimeoutMs: config.inactivityTimeoutSec * 1000,
+              timeoutMs: config.timeoutSec ? config.timeoutSec * 1000 : undefined,
+              onEvent: (event) => {
+                // Keep internal verdicts inspectable in collapsed output, not as the work to approve.
+                if (phase === "review" && event.kind === "message") log(event.text, "stdout");
+                else logReviewEvent(event);
+              },
+              onStderr: (line) => log(line, "stderr"),
+            });
+          },
+        });
+      }
       const outputs: Record<string, unknown> = {
         agent,
         model,
         effort,
         sessionId: result.sessionId,
         result: result.text.slice(0, MAX_RESULT_IN_OUTPUTS),
+        ...(result.reviewCheckpoint ? { reviewCheckpoint: result.reviewCheckpoint } : {}),
+        ...(result.review ? { review: result.review } : {}),
       };
       const details = { outputs, sessionId: result.sessionId, usage: result.usage };
       if (result.aborted) throw new Error("Cancelled");
@@ -281,6 +330,11 @@ export const codingAgentAction: ActionDefinition<Config> = {
         throw new UsageLimitError(result.error ?? "Usage limit reached", resetAt, details);
       }
       if (!result.ok) throw new ActionError(result.error ?? "The agent failed", details);
+
+      if (result.review) {
+        log({ kind: "notice", stream: "info", text: "Final work ready for your approval" });
+        log({ kind: "message", stream: "stdout", text: result.text });
+      }
 
       if (config.saveResultAs) {
         if (!result.text.trim()) throw new ActionError("The agent finished without a final message to save", details);
