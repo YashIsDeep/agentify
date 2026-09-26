@@ -2,6 +2,9 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import * as s from "../db/schema";
 
+/** Server-wide; only the default workspace's value counts. */
+export const MAX_CONCURRENT_AGENTS_KEY = "maxConcurrentAgents";
+
 export class SettingsStore {
   constructor(private readonly db: Db) {}
 

@@ -712,3 +712,8 @@ export const ticketDraftSettingsSchema = z.object({
 export type TicketDraftSettings = z.output<typeof ticketDraftSettingsSchema>;
 /** Reading a ticket is easy work, so the default is a cheap model at low effort. */
 export const DEFAULT_TICKET_DRAFT_SETTINGS: TicketDraftSettings = { agent: "codex", model: "gpt-5.6-luna", effort: "low" };
+
+/** Server-wide, shared by every workspace: how many long-running actions (agents) may run at once. */
+export const concurrencySettingsSchema = z.object({ maxConcurrentAgents: z.number().int().min(1).max(50) });
+export type ConcurrencySettings = z.output<typeof concurrencySettingsSchema>;
+export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;

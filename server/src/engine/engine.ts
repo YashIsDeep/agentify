@@ -50,7 +50,8 @@ export type InternalEvent =
 export interface EngineOptions {
   paths: Paths;
   isLongRunning: (actionType: string) => boolean;
-  maxConcurrentLongRuns: number;
+  /** Read on every claim, so a changed cap applies without a restart. */
+  maxConcurrentLongRuns: () => number;
   /** Other workspace runtimes on this server share the same process limit. */
   externalLongRuns?: () => number;
 }
@@ -663,10 +664,11 @@ export class Engine {
         .filter((run) => this.options.isLongRunning(run.actionType)).length;
       longRunning += this.options.externalLongRuns?.() ?? 0;
 
+      const cap = this.options.maxConcurrentLongRuns();
       const claimed: RunRow[] = [];
       for (const run of queued) {
         const isLong = this.options.isLongRunning(run.actionType);
-        if (isLong && longRunning >= this.options.maxConcurrentLongRuns) continue;
+        if (isLong && longRunning >= cap) continue;
         if (isLong) longRunning++;
         const updated = this.db
           .update(s.actionRuns)

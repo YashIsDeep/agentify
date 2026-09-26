@@ -1408,6 +1408,9 @@ button.counter-stopped[aria-expanded="true"] {
   justify-content: space-between;
   gap: var(--space-2);
 }
+.agent-row.concurrency-form > .ui-field {
+  flex: 0 1 160px;
+}
 .ticket-draft-form > .ui-button {
   align-self: flex-end;
 }

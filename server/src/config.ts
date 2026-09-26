@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_MAX_CONCURRENT_AGENTS } from "@wm/shared";
 
 export interface AppConfig {
   dataDir: string;
@@ -9,6 +10,7 @@ export interface AppConfig {
   port: number;
   /** Extra localhost ports allowed as request Origin (e.g. the Vite dev server). */
   devOriginPorts: number[];
+  /** Used until the cap is changed in the UI, which saves it in the default workspace. */
   maxConcurrentLongRuns: number;
 }
 
@@ -29,7 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: { dev?
     host: "127.0.0.1",
     port: positiveInt(env.WM_PORT, options.dev ? DEV_API_PORT : UI_PORT),
     devOriginPorts: [UI_PORT],
-    maxConcurrentLongRuns: positiveInt(env.WM_MAX_CONCURRENT_AGENTS, 3),
+    maxConcurrentLongRuns: DEFAULT_MAX_CONCURRENT_AGENTS,
   };
 }
 

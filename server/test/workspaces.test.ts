@@ -194,6 +194,30 @@ describe("workspaces", () => {
     await waitFor(() => runB().status === "succeeded");
   });
 
+  it("saves the shared agent limit and starts queued work when it rises", async () => {
+    expect(await (await host.app.request("/api/settings/concurrency")).json()).toEqual({ maxConcurrentAgents: 1 });
+    expect((await send("/api/settings/concurrency", "PUT", { maxConcurrentAgents: 0 })).status).toBe(400);
+    const other = host.workspaces.create({ name: "Other" });
+    const start = (context: ReturnType<typeof host.workspaces.get>, gate: string) => {
+      const workflowId = insertWorkflow(context.db, {
+        name: gate, description: "", stages: [{ name: "Work", bindings: [
+          { key: "wait", label: "Wait", actionType: "test-long-wait", config: { gate } },
+        ] }],
+      });
+      const task = context.engine.createTask({ workflowId, title: gate });
+      return () => context.engine.getTaskDetail(task.id).visits[0]!.runs[0]!;
+    };
+    const runA = start(host.workspaces.get("default"), "first");
+    await waitFor(() => runA().status === "running");
+    const runB = start(host.workspaces.get(other.id), "second");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(runB().status).toBe("queued");
+    const saved = await send("/api/settings/concurrency", "PUT", { maxConcurrentAgents: 2 });
+    expect(await saved.json()).toEqual({ maxConcurrentAgents: 2 });
+    await waitFor(() => runB().status === "running");
+    expect(runA().status).toBe("running");
+  });
+
   it("routes agent questions to their owning workspace, even with identical run IDs", async () => {
     const other = host.workspaces.create({ name: "Other" });
     const endpoints = ["default", other.id].map((id) => {

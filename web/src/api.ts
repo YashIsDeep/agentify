@@ -2,6 +2,7 @@ import type {
   ActionTypeInfo,
   AgentId,
   AnswerQuestionInput,
+  ConcurrencySettings,
   AgentModelList,
   AgentStatus,
   AgentTestResult,
@@ -65,6 +66,13 @@ export const workspaceApi = {
   clone: (id: string, input: CreateWorkspaceInput) => post<WorkspaceInfo>(`/api/workspaces/${enc(id)}/clone`, input),
   rename: (id: string, input: CreateWorkspaceInput) =>
     json<WorkspaceInfo>(`/api/workspaces/${enc(id)}`, { method: "PATCH", json: input }),
+};
+
+/** Server-wide settings, shared by every workspace. */
+export const serverApi = {
+  concurrency: () => json<ConcurrencySettings>("/api/settings/concurrency"),
+  saveConcurrency: (settings: ConcurrencySettings) =>
+    json<ConcurrencySettings>("/api/settings/concurrency", { method: "PUT", json: settings }),
 };
 
 /** Bound once to a workspace: an in-flight callback can never write into a newly selected one. */

@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AgentId, AgentStatus, AgentTestResult } from "@wm/shared";
-import { Bot, Copy, FlaskConical, RefreshCw, Sparkles, Terminal } from "lucide-react";
+import { Bot, Copy, FlaskConical, Gauge, RefreshCw, Sparkles, Terminal } from "lucide-react";
 import { useState } from "react";
+import { serverApi } from "../api";
 import { useApi } from "../api-context";
 import { AGENTS } from "../lib/agents";
 import { truncateText, usageSummary } from "../lib/format";
@@ -52,6 +53,7 @@ export function AgentsView() {
           <AgentCard key={status.id} status={status} />
         ))}
       </CardGrid>
+      <ConcurrencyCard />
       <TicketDraftCard />
     </Page>
   );
@@ -205,6 +207,66 @@ function AgentCard({ status }: { status: AgentStatus }) {
           )}
         </form>
       </Disclosure>
+    </Card>
+  );
+}
+
+/** How many agents run at once across every workspace; the rest wait in the queue. */
+function ConcurrencyCard() {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const saved = useQuery({ queryKey: ["concurrency"], queryFn: serverApi.concurrency });
+  const [edit, setEdit] = useState<string | null>(null);
+  const value = edit ?? String(saved.data?.maxConcurrentAgents ?? "");
+  const parsed = Number(value);
+  const valid = Number.isInteger(parsed) && parsed >= 1 && parsed <= 50;
+
+  const save = useMutation({
+    mutationFn: () => serverApi.saveConcurrency({ maxConcurrentAgents: parsed }),
+    onSuccess: (next) => {
+      queryClient.setQueryData(["concurrency"], next);
+      setEdit(null);
+      toast("Agent limit saved");
+    },
+    onError: (error) => toast(error.message, "error"),
+  });
+
+  return (
+    <Card>
+      <CardHeader
+        icon={<Gauge size={20} />}
+        title="Concurrency"
+        tip="The most agents that run at the same time, across all workspaces. Further agent runs wait in the queue until one finishes. Each agent uses your own subscription, so a high limit can hit its rate limits."
+      />
+      {saved.error && <Callout tone="danger">Could not load the agent limit: {saved.error.message}</Callout>}
+      <form
+        className="agent-row concurrency-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (valid) save.mutate();
+        }}
+      >
+        <Field label="Agents at once" error={edit !== null && !valid ? "Enter a whole number from 1 to 50" : undefined}>
+          <input
+            type="number"
+            min={1}
+            max={50}
+            step={1}
+            value={value}
+            disabled={!saved.data}
+            onChange={(event) => setEdit(event.target.value)}
+          />
+        </Field>
+        <Button
+          type="submit"
+          variant={edit !== null ? "primary" : "secondary"}
+          disabled={edit === null || !valid || parsed === saved.data?.maxConcurrentAgents}
+          loading={save.isPending}
+          loadingText="Saving…"
+        >
+          Save limit
+        </Button>
+      </form>
     </Card>
   );
 }

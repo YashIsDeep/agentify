@@ -96,7 +96,7 @@ session, the agent resumes it with a short "carry on" prompt instead of the orig
 
 ### Concurrency
 Tasks run in parallel (isolated by worktrees). Global cap on concurrent long-running
-actions (default 3; configurable). Excess runs are `queued` and visible on the timeline.
+actions (default 10; set on the Agents page, shared by all workspaces). Excess runs are `queued` and visible on the timeline.
 
 ### Restart
 On server start: runs in `running` whose process belonged to the previous server are

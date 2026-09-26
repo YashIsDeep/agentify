@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createWorkspaceSchema, workspaceSchema, type WorkspaceInfo } from "@wm/shared";
+import {
+  type ConcurrencySettings,
+  concurrencySettingsSchema,
+  createWorkspaceSchema,
+  workspaceSchema,
+  type WorkspaceInfo,
+} from "@wm/shared";
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { z, ZodError } from "zod";
@@ -11,6 +17,7 @@ import { localOnly } from "./api/security";
 import * as s from "./db/schema";
 import { EngineError } from "./engine/engine";
 import { writePrivateFile } from "./lib/atomic-file";
+import { MAX_CONCURRENT_AGENTS_KEY } from "./services/settings";
 
 type BootstrapOptions = Parameters<typeof bootstrap>[1];
 const catalogSchema = z.object({ version: z.literal(1), workspaces: z.array(workspaceSchema).min(1) });
@@ -62,6 +69,19 @@ export class WorkspaceManager {
     const context = this.contexts.get(id);
     if (!context) throw new EngineError("Workspace not found", 404);
     return context;
+  }
+
+  /** The cap is shared by every workspace, so it lives in the default one's settings. */
+  concurrency(): ConcurrencySettings {
+    return { maxConcurrentAgents: this.maxConcurrentLongRuns() };
+  }
+
+  setConcurrency(raw: unknown): ConcurrencySettings {
+    const { maxConcurrentAgents } = concurrencySettingsSchema.parse(raw);
+    this.defaultContext.settings.set(MAX_CONCURRENT_AGENTS_KEY, maxConcurrentAgents);
+    // A raised cap has room for queued work right away.
+    if (this.running) for (const context of this.contexts.values()) context.engine.publish({ type: "runs.queued" });
+    return this.concurrency();
   }
 
   rename(id: string, raw: unknown): WorkspaceInfo {
@@ -125,8 +145,18 @@ export class WorkspaceManager {
   private open(id: string): AppContext {
     return bootstrap(
       { ...this.config, dataDir: join(this.config.dataDir, "workspaces", id) },
-      { ...this.options, seed: false, workspaceId: id, externalLongRuns: () => this.externalLongRuns(id) },
+      {
+        ...this.options,
+        seed: false,
+        workspaceId: id,
+        externalLongRuns: () => this.externalLongRuns(id),
+        maxConcurrentLongRuns: () => this.maxConcurrentLongRuns(),
+      },
     );
+  }
+
+  private maxConcurrentLongRuns(): number {
+    return this.defaultContext.settings.get(MAX_CONCURRENT_AGENTS_KEY, this.config.maxConcurrentLongRuns);
   }
 
   private externalLongRuns(id: string): number {
@@ -166,6 +196,8 @@ export function bootstrapWorkspaces(config: AppConfig, options: BootstrapOptions
     console.error(error);
     return c.json({ error: "Internal server error" }, 500);
   });
+  app.get("/api/settings/concurrency", (c) => c.json(workspaces.concurrency()));
+  app.put("/api/settings/concurrency", async (c) => c.json(workspaces.setConcurrency(await readBody(c.req.raw))));
   app.get("/api/workspaces", (c) => c.json(workspaces.list()));
   app.post("/api/workspaces", async (c) => c.json(workspaces.create(await readBody(c.req.raw)), 201));
   app.patch("/api/workspaces/:workspaceId", async (c) =>

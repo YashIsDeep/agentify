@@ -13,7 +13,7 @@ import { type ArchiveOptions, archiveTask } from "./services/archive";
 import { ConnectionService } from "./services/connections";
 import { QuestionService } from "./services/questions";
 import { RepoService } from "./services/repos";
-import { SettingsStore } from "./services/settings";
+import { MAX_CONCURRENT_AGENTS_KEY, SettingsStore } from "./services/settings";
 import { WorkflowService } from "./services/workflows";
 import { TicketDraftService } from "./services/ticket-draft";
 
@@ -22,7 +22,7 @@ const WEB_DIST = fileURLToPath(new URL("../../web/dist", import.meta.url));
 /** Wires the app together. Call `runner.start()` to begin executing actions. */
 export function bootstrap(
   config: AppConfig,
-  options: { registry?: ActionRegistry; seed?: boolean; http?: HttpFetch; workspaceId?: string; externalLongRuns?: () => number } = {},
+  options: { registry?: ActionRegistry; seed?: boolean; http?: HttpFetch; workspaceId?: string; externalLongRuns?: () => number; maxConcurrentLongRuns?: () => number } = {},
 ) {
   const paths = createPaths(config.dataDir);
   ensureBaseDirs(paths);
@@ -36,7 +36,8 @@ export function bootstrap(
   const engine = new Engine(db, sqlite, {
     paths,
     isLongRunning: (actionType) => registry.get(actionType)?.longRunning ?? false,
-    maxConcurrentLongRuns: config.maxConcurrentLongRuns,
+    maxConcurrentLongRuns:
+      options.maxConcurrentLongRuns ?? (() => settings.get(MAX_CONCURRENT_AGENTS_KEY, config.maxConcurrentLongRuns)),
     externalLongRuns: options.externalLongRuns,
   });
   const archive = (taskId: string, archiveOptions?: ArchiveOptions) =>
