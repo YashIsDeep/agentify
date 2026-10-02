@@ -28,8 +28,9 @@ export function AgentReview({ run, detail, stages }: { run: RunView; detail: Tas
   };
   const ready = isAwaitingApproval(run);
   const config = { ...run.config, ...(run.overrides ?? {}) };
-  const automaticReview = config.requireApproval && config.reviewBeforeApproval !== false;
-  const reviewed = ready && !!run.outputs?.review;
+  const automaticReview = config.requireApproval && (config.loopMode === "plan" || config.loopMode === "implementation" || config.reviewBeforeApproval !== false);
+  const ciPassed = ready && !!run.outputs?.ci;
+  const reviewed = ready && (!!run.outputs?.review || ciPassed);
   const revisions = detail.timeline.filter((event) => event.runId === run.id && event.type === "run.changes-requested").length;
   const visit = detail.visits.find((entry) => entry.id === run.visitId);
   const next = visit && actionList(visit).find((entry) => entry.batchId === run.batchId && entry.batchPosition > run.batchPosition);
@@ -70,9 +71,9 @@ export function AgentReview({ run, detail, stages }: { run: RunView; detail: Tas
       <form className="approval-card agent-review" onSubmit={send} aria-label="Review agent work">
         <header className="approval-card-head" aria-live="polite">
           <Hand size={15} />
-          <strong>{ready ? reviewed ? "Final work ready for approval" : "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : automaticReview ? "Preparing and reviewing…" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
+          <strong>{ready ? reviewed ? "Final work ready for approval" : "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : config.loopMode === "ci" ? "Checking CI and fixing failures…" : automaticReview ? "Preparing and reviewing…" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
           <span className="spacer" />
-          <Tag>{reviewed ? "Agent reviewed" : revisions ? `Revision ${revisions}` : "First draft"}</Tag>
+          <Tag>{ciPassed ? "CI passed" : reviewed ? "Agent reviewed" : revisions ? `Revision ${revisions}` : "First draft"}</Tag>
         </header>
         {/* While the agent works or asks, its question is the one thing to answer; a draft waits here. */}
         {ready && (

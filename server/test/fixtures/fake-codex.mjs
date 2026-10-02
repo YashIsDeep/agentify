@@ -15,6 +15,7 @@ if (args[0] === "login" && args[1] === "status") {
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 const prompt = Buffer.concat(chunks).toString("utf8");
+if (prompt.startsWith("Fix the failing CI checks") && prompt.includes("[ci:fix]")) writeFileSync("ci-fixed", "fixed");
 const emit = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
 if (prompt.includes("HANG")) {

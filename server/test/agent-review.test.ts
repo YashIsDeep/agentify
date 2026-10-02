@@ -17,10 +17,11 @@ describe("internal agent review", () => {
   });
 
   it("automatically sends rejected documents to the author and returns the corrected document", async () => {
-    const invoke = vi.fn().mockResolvedValueOnce(changes()).mockResolvedValueOnce(result("# Corrected plan"));
+    const invoke = vi.fn().mockResolvedValueOnce(changes()).mockResolvedValueOnce(result("# Corrected plan")).mockResolvedValueOnce(approved());
     const final = await reviewResult({ draft: result("# Draft"), document: true, context: "Build it", invoke });
     expect(invoke).toHaveBeenNthCalledWith(2, expect.stringContaining("Cover edge cases"), "author", "revise");
-    expect(final).toMatchObject({ text: "# Corrected plan", review: { decision: "revised" }, usage: { inputTokens: 30 } });
+    expect(invoke).toHaveBeenNthCalledWith(3, expect.stringContaining("# Corrected plan"), null, "review");
+    expect(final).toMatchObject({ text: "# Corrected plan", review: { decision: "revised" }, usage: { inputTokens: 40 } });
     expect(final.reviewCheckpoint).toBeUndefined();
   });
 
@@ -40,7 +41,7 @@ describe("internal agent review", () => {
 
   it("does not offer blocked code fixes for approval", async () => {
     const final = await reviewResult({ draft: result("Initial"), document: false, context: "", invoke: async () => changes() });
-    expect(final).toMatchObject({ ok: false, error: "Cover edge cases" });
+    expect(final).toMatchObject({ ok: false, error: expect.stringContaining("Implementation loop stopped after 3 correction attempts") });
   });
 
   it.each(["review", "revise"] as const)("resumes a quota-interrupted %s without losing the draft or repeating completed work", async (phase) => {
@@ -50,10 +51,12 @@ describe("internal agent review", () => {
     invoke.mockResolvedValueOnce(limited);
     const pending = await reviewResult({ draft: result("# Draft"), document: true, context: "", invoke });
     expect(pending).toMatchObject({ ok: false, text: "# Draft", sessionId: "author", reviewCheckpoint: { phase, sessionId: "paused-session" } });
-    const resume = vi.fn(async () => phase === "review" ? approved() : result("# Revised"));
+    const resume = vi.fn();
+    if (phase === "revise") resume.mockResolvedValueOnce(result("# Revised"));
+    resume.mockResolvedValueOnce(approved());
     const final = await reviewResult({ draft: pending.reviewCheckpoint!.draft, checkpoint: pending.reviewCheckpoint, document: true, context: "", invoke: resume });
-    expect(resume).toHaveBeenCalledExactlyOnceWith(expect.any(String), "paused-session", phase);
-    expect(final).toMatchObject({ ok: true, text: phase === "review" ? "# Draft" : "# Revised", usage: { inputTokens: 10 } });
+    expect(resume).toHaveBeenNthCalledWith(1, expect.any(String), "paused-session", phase);
+    expect(final).toMatchObject({ ok: true, text: phase === "review" ? "# Draft" : "# Revised", usage: { inputTokens: phase === "review" ? 10 : 20 } });
   });
 
   it("does not return a cancelled or empty revision as completed work", async () => {
@@ -62,5 +65,19 @@ describe("internal agent review", () => {
       const final = await reviewResult({ draft: result("# Draft"), document: true, context: "", invoke });
       expect(final.ok).toBe(false);
     }
+  });
+
+  it("bounds repeated plan rejection and retains the latest draft", async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(changes()).mockResolvedValueOnce(result("# Latest draft")).mockResolvedValueOnce(changes());
+    const final = await reviewResult({ draft: result("# Draft"), document: true, context: "", maxCorrections: 1, invoke });
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(final).toMatchObject({ ok: false, text: "# Latest draft", error: expect.stringContaining("Plan loop stopped after 1 correction attempts") });
+  });
+
+  it("lets the implementation reviewer continue fixing before accepting", async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(changes()).mockResolvedValueOnce(result(JSON.stringify({ decision: "approved", feedback: "", summary: "All issues fixed" }), "reviewer"));
+    const final = await reviewResult({ draft: result("Initial"), document: false, context: "", invoke });
+    expect(invoke).toHaveBeenNthCalledWith(2, expect.stringContaining("Cover edge cases"), "reviewer", "review");
+    expect(final).toMatchObject({ ok: true, text: "All issues fixed" });
   });
 });

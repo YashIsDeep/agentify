@@ -4,12 +4,15 @@ import { dirname, join } from "node:path";
 import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, resolveAgentChoice } from "@wm/shared";
 import { z } from "zod";
 import { runAgent } from "../agents/run";
+import { runCiLoop, type CiCheckpoint, type CiResult } from "../agents/ci-loop";
 import { reviewResult, type ReviewCheckpoint, type ReviewedResult } from "../agents/review";
 import type { AgentEvent } from "../agents/types";
 import type { TaskRow } from "../db/schema";
 import { resolveInside } from "../paths";
 import { ActionError, type ActionDefinition, type RunLog, UsageLimitError } from "./types";
 import { artifactName } from "./validation";
+import { invocation } from "./shell";
+import { runProcess, stripAnsi } from "../lib/process";
 
 /** How long a run waits when its agent hits a usage limit without saying when it resets. */
 export const UNKNOWN_RESET_WAIT_MS = 30 * 60_000;
@@ -22,6 +25,12 @@ const configSchema = z.object({
   model: z.string().default(""),
   effort: z.string().default(""),
   prompt: z.string().min(1),
+  loopMode: z.enum(["auto", "plan", "implementation", "ci"]).default("auto"),
+  maxCorrections: z.number().int().min(1).max(10).default(3),
+  ciCheckCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
+  ciPublishCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
+  ciShell: z.enum(["default", "cmd", "powershell", "bash", "sh"]).default("default"),
+  ciTimeoutSec: z.number().positive().default(1800),
   autonomy: z.enum(["read-only", "autonomous"]).default("read-only"),
   /** Hold the run open when the agent finishes: nothing below it runs until you approve. */
   requireApproval: z.boolean().default(false),
@@ -36,7 +45,7 @@ const configSchema = z.object({
   saveResultAs: z.union([z.literal(""), artifactName("Save result as")]).default(""),
   inactivityTimeoutSec: z.number().positive().default(300),
   timeoutSec: z.number().positive().optional(),
-});
+}).refine((config) => config.loopMode !== "ci" || !!config.ciCheckCommand.trim(), "CI loop requires a check command");
 type Config = z.output<typeof configSchema>;
 
 /** Largest final message kept in outputs (the artifact always gets the full text). */
@@ -63,6 +72,24 @@ export const codingAgentAction: ActionDefinition<Config> = {
   configSchema,
   longRunning: true,
   fields: [
+    {
+      name: "loopMode", label: "Loop", kind: "select", default: "auto",
+      options: [
+        { value: "auto", label: "Automatic review (existing behavior)" },
+        { value: "plan", label: "Plan loop — draft, review, revise" },
+        { value: "implementation", label: "Implement loop — implement, review, fix" },
+        { value: "ci", label: "CI loop — check, fix, rerun" },
+      ],
+      help: "Plan loops produce a document; implement and CI loops edit the repository. Your approval controls when the next action starts.",
+    },
+    { name: "maxCorrections", label: "Maximum correction attempts", kind: "number", default: 3, help: "Stops with a failure and the remaining feedback when the limit is reached (1–10)." },
+    { name: "ciCheckCommand", label: "CI check command", kind: "textarea", default: "", placeholder: "npm test", help: "For CI loops: run local checks, remote checks, or a script combining both. It must wait for checks on the current commit and exit 0 only when all pass. Use WM_* environment variables, not templates." },
+    { name: "ciPublishCommand", label: "CI publish command", kind: "textarea", default: "", advanced: true, help: "Optional: runs before each check, including the first, to commit and push changes needed by remote CI. Leave blank for local checks or an already-published branch. Must be safe to repeat." },
+    { name: "ciShell", label: "CI command shell", kind: "select", default: "default", advanced: true, options: [
+      { value: "default", label: "System default" }, { value: "powershell", label: "PowerShell" },
+      { value: "cmd", label: "cmd.exe" }, { value: "bash", label: "Bash" }, { value: "sh", label: "sh" },
+    ] },
+    { name: "ciTimeoutSec", label: "CI command timeout (seconds)", kind: "number", default: 1800, advanced: true },
     {
       name: "prompt",
       label: "Prompt",
@@ -162,6 +189,8 @@ export const codingAgentAction: ActionDefinition<Config> = {
   ],
 
   async run({ config, run, task, artifactDir, env, log, signal, services }) {
+    const autonomy = config.loopMode === "plan" ? "read-only" : config.loopMode === "auto" ? config.autonomy : "autonomous";
+    const saveResultAs = config.saveResultAs || (config.loopMode === "plan" ? "plan.md" : "");
     const stageDefaults = services.engine.stageAgentDefaultsForRun(run);
     const { agent, model, effort } = selectAgent(config, task, run.overrides, stageDefaults, (id) => services.agents.defaults(id));
     const adapter = services.agents.adapter(agent);
@@ -182,7 +211,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
     const cwd = [task.worktreePath, task.repoPath, artifactDir].find((dir): dir is string => !!dir && existsSync(dir))!;
     // `ensure-worktree` treats "no repository" as nothing to do, so without this an autonomous
     // agent would quietly start editing the artifacts folder instead of the codebase.
-    if (config.autonomy === "autonomous" && cwd === artifactDir) {
+    if (autonomy === "autonomous" && cwd === artifactDir) {
       throw new Error("This task has no repository, so there is nothing for an autonomous agent to work on. Set one in the task's Details.");
     }
     // `ensure-worktree` is an action like any other, so a stage can easily be built without one above
@@ -190,7 +219,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
     // happens to have — which is not what a task whose Details say "Use a worktree" asked for. Editing
     // it is a refusal; merely reading it is harmless, but surprising enough to say out loud below.
     const strayFromWorktree = cwd === task.repoPath && task.useWorktree;
-    if (config.autonomy === "autonomous" && strayFromWorktree) {
+    if (autonomy === "autonomous" && strayFromWorktree) {
       throw new Error(
         `This task is set to use a worktree but hasn't got one, so an autonomous agent would edit the repository's own checkout at ${cwd}, ` +
           `on whatever branch it is currently on. Add an “Ensure worktree” action to an earlier stage in this workflow, ` +
@@ -236,16 +265,16 @@ export const codingAgentAction: ActionDefinition<Config> = {
     // When a run goes wrong the prompt is as often the culprit as the agent — a template that
     // rendered an artifact as nothing leaves no other trace — and until now it was the one thing
     // the transcript never kept.
-    if (!checkpoint) log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
+    if (!checkpoint && config.loopMode !== "ci") log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
 
     // Only agents that can be pointed at an MCP server per invocation can stop and ask.
-    const askUserUrl = adapter.supportsQuestions ? services.questions.endpointFor(run.id) : null;
+    const askUserUrl = adapter.supportsQuestions && config.loopMode !== "ci" ? services.questions.endpointFor(run.id) : null;
     if (askUserUrl) {
       services.questions.attachLog(run.id, log);
       log(`${adapter.label} can ask you questions while it works`);
     }
 
-    log(`${adapter.label}${model ? ` · ${model}` : ""}${effort ? ` · ${effort}` : ""} · ${config.autonomy} · ${cwd}`);
+    log(`${adapter.label}${model ? ` · ${model}` : ""}${effort ? ` · ${effort}` : ""} · ${autonomy} · ${cwd}`);
     // Autonomous runs never reach here in this state; a read-only one only reads, so this is a note
     // rather than a failure — but the path above is the checkout the whole team works in, and seeing
     // why it is there beats wondering whether the worktree silently went missing.
@@ -254,15 +283,15 @@ export const codingAgentAction: ActionDefinition<Config> = {
     }
     const logEvent = eventLogger(log);
     try {
-      let result: ReviewedResult = checkpoint?.draft ?? await runAgent({
+      const runPrimary = (primaryPrompt: string, primarySession: string | null) => runAgent({
         adapter,
         cli,
         invocation: {
-          prompt,
+          prompt: primaryPrompt,
           model,
           effort,
-          autonomy: config.autonomy,
-          resumeSessionId,
+          autonomy,
+          resumeSessionId: primarySession,
           cwd,
           scratchDir: join(services.paths.runsDir(task.id), `${run.id}-agent`),
           askUserUrl,
@@ -275,12 +304,47 @@ export const codingAgentAction: ActionDefinition<Config> = {
         onEvent: logEvent,
         onStderr: (line) => log(line, "stderr"),
       });
-      if (result.ok && config.requireApproval && config.reviewBeforeApproval) {
-        const document = !!config.saveResultAs || config.autonomy === "read-only";
+      const runCiCommand = async (command: string) => {
+        log(`$ ${command}`);
+        const check = await runProcess({
+          ...invocation(config.ciShell, command), cwd, signal,
+          env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
+          timeoutMs: config.ciTimeoutSec * 1000,
+          onLine: (text, stream) => log(stripAnsi(text), stream),
+        });
+        if (check.aborted) throw new Error("Cancelled");
+        if (check.timedOut) throw new Error(`CI command timed out after ${config.ciTimeoutSec}s`);
+        if (check.code === null) throw new Error("CI command ended without an exit code");
+        return { ok: check.code === 0, output: `Exit code: ${check.code}\n${stripAnsi(check.output).slice(-30_000)}` };
+      };
+      let result: ReviewedResult & CiResult = config.loopMode === "ci"
+        ? await runCiLoop({
+          context: config.prompt,
+          maxCorrections: config.maxCorrections,
+          checkpoint: run.outputs?.ciCheckpoint as CiCheckpoint | undefined,
+          followUp,
+          check: () => runCiCommand(config.ciCheckCommand),
+          publish: async () => {
+            if (!config.ciPublishCommand.trim()) return;
+            const published = await runCiCommand(config.ciPublishCommand);
+            if (!published.ok) throw new Error(`CI publish command failed:\n${published.output}`);
+          },
+          fix: (fixPrompt, sessionId) => {
+            log({ kind: "notice", stream: "info", text: "CI loop: fixing failures before rerunning checks" });
+            log({ kind: "prompt", stream: "info", text: promptForLog(fixPrompt) });
+            return runPrimary(fixPrompt, sessionId);
+          },
+        })
+        : checkpoint?.draft ?? await runPrimary(prompt, resumeSessionId);
+      const reviewEnabled = config.loopMode === "plan" || config.loopMode === "implementation" ||
+        (config.loopMode === "auto" && config.requireApproval && config.reviewBeforeApproval);
+      if (result.ok && reviewEnabled) {
+        const document = config.loopMode === "plan" || (config.loopMode === "auto" && (!!saveResultAs || autonomy === "read-only"));
         result = await reviewResult({
           draft: result,
           checkpoint,
           document,
+          maxCorrections: config.maxCorrections,
           context: `${config.prompt}${followUp ? `\n\nRequested changes:\n${followUp}` : ""}`,
           invoke: async (reviewPrompt, sessionId, phase) => {
             const logReviewEvent = eventLogger(log);
@@ -292,7 +356,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
               adapter, cli, env, signal,
               invocation: {
                 prompt: reviewPrompt, model, effort,
-                autonomy: document ? "read-only" : config.autonomy,
+                autonomy: document ? "read-only" : autonomy,
                 resumeSessionId: sessionId, cwd,
                 scratchDir: join(services.paths.runsDir(task.id), `${run.id}-${phase}`),
                 // Internal review and correction must not become a user approval conversation.
@@ -318,6 +382,9 @@ export const codingAgentAction: ActionDefinition<Config> = {
         result: result.text.slice(0, MAX_RESULT_IN_OUTPUTS),
         ...(result.reviewCheckpoint ? { reviewCheckpoint: result.reviewCheckpoint } : {}),
         ...(result.review ? { review: result.review } : {}),
+        ...(result.ciCheckpoint ? { ciCheckpoint: result.ciCheckpoint } : {}),
+        ...(result.ci ? { ci: result.ci } : {}),
+        loopMode: config.loopMode,
       };
       const details = { outputs, sessionId: result.sessionId, usage: result.usage };
       if (result.aborted) throw new Error("Cancelled");
@@ -331,18 +398,18 @@ export const codingAgentAction: ActionDefinition<Config> = {
       }
       if (!result.ok) throw new ActionError(result.error ?? "The agent failed", details);
 
-      if (result.review) {
-        log({ kind: "notice", stream: "info", text: "Final work ready for your approval" });
+      if (result.review || result.ci) {
+        log({ kind: "notice", stream: "info", text: config.requireApproval ? "Final work ready for your approval" : "Loop completed" });
         log({ kind: "message", stream: "stdout", text: result.text });
       }
 
-      if (config.saveResultAs) {
+      if (saveResultAs) {
         if (!result.text.trim()) throw new ActionError("The agent finished without a final message to save", details);
-        const file = resolveInside(artifactDir, config.saveResultAs);
+        const file = resolveInside(artifactDir, saveResultAs);
         await mkdir(dirname(file), { recursive: true });
         await writeFile(file, withoutPreamble(result.text), "utf8");
-        outputs.artifact = config.saveResultAs;
-        log(`Saved the final message to ${config.saveResultAs}`);
+        outputs.artifact = saveResultAs;
+        log(`Saved the final message to ${saveResultAs}`);
       }
       return { ...details, summary: usageSummary(result.usage) };
     } finally {

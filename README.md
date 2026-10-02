@@ -89,12 +89,30 @@ is for checkpoints that follow no agent, and moving on is just a *Move to stage*
 **Automatic review before approval.** Coding-agent actions that wait for approval now run an
 independent review session first, using the same agent and model. Saved documents (or read-only
 results) are reviewed with a structured verdict: approved documents go straight to you; requested
-corrections go back to the author, and the revised document comes to you. For implementation actions
+corrections go back to the author, and the revised document is reviewed again before coming to you. For implementation actions
 without a saved document, the reviewer fixes the code and runs relevant checks before presenting
 the final implementation. Review feedback stays in the transcript; it is never saved over the
 document. Invalid reviews or blocked fixes fail the action instead of asking you to approve
 unfinished work. Quota waits preserve the review or revision phase. This applies to existing
 approval-enabled actions too; turn off **Have an agent review and fix the work first** to opt out.
+
+**Plan, implement and CI loops.** In **Workflows → Add action**, choose one of the three loop presets:
+
+- **Plan loop:** draft → independent review → revise → re-review. The accepted document is saved as `plan.md` by default and waits for your approval.
+- **Implement loop:** implement → review and fix → repeat until accepted. You approve the final implementation.
+- **CI loop:** publish (optional) → check → fix failures → publish → check again. Only a zero exit status from the check command counts as passing. You approve the final changes after CI passes.
+
+Loops default to three correction attempts (configurable from 1–10). Reaching the limit fails the
+action with the remaining feedback instead of approving it. Quota waits retain the phase and attempt
+count. Existing saved workflows keep their structure; choose a loop in an action's settings to change it.
+
+For **CI check command**, use the repository's local test/build commands, a remote CI check command,
+or a script combining both. The script must propagate failures, wait for remote checks on the current
+commit, and fail if required checks are absent. **CI publish command** optionally commits and pushes
+before every check; leave it blank for local checks or a branch already published by an earlier action.
+Use repeatable commands and `WM_*` environment variables for task values; command templates are rejected.
+New default workflows include a disabled CI loop after opening the merge request. Configure the
+repository-specific commands before enabling it. Passing CI never merges the request automatically.
 
 **Reviewing and revising agent work.** Open the task and click **Review & revise** when the result
 is ready. The feedback box stays below the chat: type what you want changed and click **Request

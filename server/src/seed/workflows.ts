@@ -116,6 +116,7 @@ const codingAgent = ({
   ...config
 }: {
   autonomy: "read-only" | "autonomous";
+  loopMode?: "plan" | "implementation";
   prompt: string;
   continueSession?: boolean;
   saveResultAs?: string;
@@ -129,6 +130,8 @@ const codingAgent = ({
   continueSession: false,
   saveResultAs: "",
   requireApproval: approval !== undefined,
+  loopMode: config.autonomy === "read-only" ? "plan" : "implementation",
+  maxCorrections: 3,
   approvalInstructions: approval ?? "",
   sendBackTo: sendBackTo ? `${STAGE_REF}${sendBackTo}` : "",
   ...config,
@@ -199,6 +202,16 @@ const submitMr = (): SeedStage => ({
       },
     },
     jira("jiraInReview", "Jira → In Review", "In Review"),
+    {
+      key: "ciLoop", label: "CI loop", actionType: "coding-agent", enabled: false,
+      config: {
+        agent: "claude", loopMode: "ci", maxCorrections: 3, autonomy: "autonomous",
+        prompt: "Resolve CI failures for {{task.title}}.\n\n{{task.description}}",
+        ciCheckCommand: 'echo Configure local and remote checks for this repository before enabling the CI loop. && exit 1',
+        ciPublishCommand: "", requireApproval: true,
+        approvalInstructions: "Review the final changes after CI passes. This does not merge the request.",
+      },
+    },
     approval("merged", "Merged", { instructions: "Approve once {{outputs.openMr.mrUrl}} is merged; that archives the task." }),
     {
       key: "submitArchive",

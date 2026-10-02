@@ -47,6 +47,7 @@ export function ConfigFields({
   const agentOf = (values: Record<string, unknown>) => stringOrNull(values.agent) || stageAgent;
   const set = (name: string, value: unknown) => {
     const next = { ...config, [name]: value };
+    if (name === "loopMode" && value !== "auto") next.autonomy = value === "plan" ? "read-only" : "autonomous";
     // An effort belongs to its model: drop it when the new agent or model doesn't offer it.
     if ((name === "agent" || name === "model") && typeof next.effort === "string") {
       next.effort = keepEffort(models.data, agentOf(next), stringOrNull(next.model), next.effort);
@@ -64,6 +65,9 @@ export function ConfigFields({
   const shown = action.fields.filter(
     (field) =>
       !!field.advanced === advanced &&
+      (!field.name.startsWith("ci") || config.loopMode === "ci") &&
+      (field.name !== "autonomy" || !config.loopMode || config.loopMode === "auto") &&
+      (field.name !== "reviewBeforeApproval" || !config.loopMode || config.loopMode === "auto") &&
       // A field can hang off a switch (an approval's instructions off "Wait for my approval"):
       // with the switch off it is noise, and its value is kept for when it goes back on.
       (!field.dependsOn || config[field.dependsOn] === true),
@@ -74,7 +78,7 @@ export function ConfigFields({
       key={field.name}
       note={note}
       field={field}
-      value={config[field.name] ?? (field.name === "reviewBeforeApproval" ? field.default : undefined)}
+      value={config[field.name] ?? (["reviewBeforeApproval", "loopMode", "maxCorrections", "ciShell", "ciTimeoutSec"].includes(field.name) ? field.default : undefined)}
       stages={stages}
       connections={usable}
       // The model list depends on the agent chosen in this same form, the effort list on both.

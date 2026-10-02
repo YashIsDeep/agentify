@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Hand, Pl
 import { agentLabel } from "../../lib/agents";
 import type { Draft, DraftStage } from "../../lib/draft";
 import { cls, countOf } from "../../lib/format";
+import { LOOP_LABELS, loopPresets } from "../../lib/loops";
 import { Button, IconButton, InfoTip, Menu, Tag } from "../../ui";
 
 /** The focused stage editor, with actions in execution order. */
@@ -88,7 +89,7 @@ export function StageColumn({
                 </span>
                 <span className="wf-binding-content">
                   <span className="wf-binding-label">{binding.label || label(binding.actionType)}</span>
-                  <span className="wf-binding-type">{label(binding.actionType)}</span>
+                  <span className="wf-binding-type">{binding.actionType === "coding-agent" && LOOP_LABELS[String(binding.config.loopMode)] || label(binding.actionType)}</span>
                 </span>
                 {!binding.enabled && <Tag>Off</Tag>}
                 <ChevronRight size={15} />
@@ -125,7 +126,7 @@ function AddAction({ actions, onAdd }: { actions: ActionTypeInfo[]; onAdd: (acti
       label="Choose an action"
       width={340}
       trigger={trigger}
-      items={actions.map((action) => ({ key: action.type, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))}
+      items={[...actions.flatMap(loopPresets), ...actions].map((action) => ({ key: `${action.type}:${action.label}`, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))}
     />
   );
 }

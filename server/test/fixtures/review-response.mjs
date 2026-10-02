@@ -2,7 +2,7 @@
 export function reviewResponse(prompt) {
   if (prompt.startsWith("Review the following document independently")) {
     if (prompt.includes("[review:invalid]")) return "Looks good to me";
-    return JSON.stringify(prompt.includes("[review:changes]")
+    return JSON.stringify(prompt.includes("[review:changes]") && !prompt.includes("Document:\n# Revised plan")
       ? { decision: "changes_requested", feedback: "Add acceptance criteria" }
       : { decision: "approved", feedback: "" });
   }

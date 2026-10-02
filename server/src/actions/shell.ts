@@ -99,7 +99,7 @@ function pickCwd(preference: Config["cwd"], ctx: ActionContext<Config>): string 
   return cwd;
 }
 
-function invocation(shell: Config["shell"], command: string) {
+export function invocation(shell: Config["shell"], command: string) {
   switch (shell) {
     case "default":
       return { command, shell: true };

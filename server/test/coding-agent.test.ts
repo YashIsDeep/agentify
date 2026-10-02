@@ -62,6 +62,49 @@ async function reenter(taskId: string, workflowId: string, attempt: number) {
 }
 
 describe("coding-agent action", () => {
+  it("runs a CI loop through checks and repair before the final approval", async () => {
+    const check = fileURLToPath(new URL("./fixtures/ci-check.mjs", import.meta.url));
+    const workflowId = agentWorkflow({ loopMode: "ci", requireApproval: true, saveResultAs: "", prompt: "Fix CI [ci:fix]",
+      ciCheckCommand: `node "${check}"`, ciPublishCommand: `node "${check}" publish`,
+    });
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    const waiting = await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined);
+    expect(waiting.outputs).toMatchObject({ ci: { passed: true, corrections: 1 }, result: expect.stringContaining("Local and remote checks passed") });
+    expect(readFileSync(join(h.dataDir, "ci-publishes"), "utf8")).toBe("publish\npublish\n");
+    expect(readFileSync(join(h.dataDir, "ci-checks"), "utf8")).toBe("check\ncheck\n");
+    expect(q.detail(task.id).timeline.filter((event) => event.type === "approval.waiting")).toHaveLength(1);
+  });
+
+  it("stops an exhausted CI loop without approval", async () => {
+    const workflowId = agentWorkflow({ loopMode: "ci", requireApproval: true, saveResultAs: "", ciCheckCommand: 'node -e "process.exit(1)"', maxCorrections: 1 });
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    const failed = await waitFor(() => q.latest(task.id, "agent")?.status === "failed" ? q.latest(task.id, "agent") : undefined);
+    expect(failed.error).toContain("CI loop stopped after 1 correction attempts");
+    expect(q.detail(task.id).timeline.some((event) => event.type === "approval.waiting")).toBe(false);
+  });
+
+  it("rejects template interpolation in CI commands before rendering task input", async () => {
+    const workflowId = agentWorkflow({ loopMode: "ci", ciCheckCommand: "echo {{task.title}}" });
+    const task = h.engine.createTask({ workflowId, title: "unsafe shell input", repoPath: h.dataDir, useWorktree: false });
+    const failed = await waitFor(() => q.latest(task.id, "agent")?.status === "failed" ? q.latest(task.id, "agent") : undefined);
+    expect(failed.error).toContain("CI commands cannot contain template expressions");
+  });
+
+  it("uses the explicit loop mode instead of inferring review type from the saved artifact", async () => {
+    const workflowId = agentWorkflow({ loopMode: "implementation", requireApproval: true, saveResultAs: "implementation.md" });
+    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
+    await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
+    expect(artifact(task.id, "implementation.md")).toBe("Final implementation with reviewer fixes and passing checks.");
+  });
+
+  it("defaults a plan loop's final artifact to plan.md and reviews even without a human gate", async () => {
+    const workflowId = agentWorkflow({ loopMode: "plan", saveResultAs: "", prompt: "Plan [review:changes]" });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+    expect(artifact(task.id, "plan.md")).toContain("# Revised plan");
+    expect(q.latest(task.id, "agent")?.outputs?.review).toMatchObject({ decision: "revised" });
+  });
+
   it("automatically corrects a rejected plan before exposing its approval", async () => {
     const workflowId = agentWorkflow({ prompt: "Plan the widget [review:changes]", requireApproval: true });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
