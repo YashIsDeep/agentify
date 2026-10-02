@@ -1,9 +1,8 @@
-import { type ActionTypeInfo, APPROVAL_ACTION } from "@wm/shared";
+import { type ActionTypeInfo, APPROVAL_ACTION, CODING_AGENT_ACTION, LOOP_MODES, loopPolicy } from "@wm/shared";
 import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Hand, Plus, Settings2, Terminal, Trash2, Zap } from "lucide-react";
 import { agentLabel } from "../../lib/agents";
-import type { Draft, DraftStage } from "../../lib/draft";
+import type { ActionPreset, Draft, DraftStage } from "../../lib/draft";
 import { cls, countOf } from "../../lib/format";
-import { LOOP_LABELS, loopPresets } from "../../lib/loops";
 import { Button, IconButton, InfoTip, Menu, Tag } from "../../ui";
 
 /** The focused stage editor, with actions in execution order. */
@@ -33,10 +32,15 @@ export function StageColumn({
   onSelectBinding: (bindingId: string) => void;
   onMove: (delta: number) => void;
   onDelete: () => void;
-  onAddBinding: (action: ActionTypeInfo) => void;
+  onAddBinding: (action: ActionTypeInfo, preset?: ActionPreset) => void;
   onMoveBinding: (index: number, delta: number) => void;
 }) {
   const label = (type: string) => actions.find((action) => action.type === type)?.label ?? type;
+  // A coding agent in a loop says which; a single run is just a coding agent.
+  const typeLabel = (type: string, config: Record<string, unknown>) => {
+    const policy = type === CODING_AGENT_ACTION ? loopPolicy(config) : null;
+    return policy && policy.mode !== "single" ? policy.label : label(type);
+  };
 
   return (
     <section className={cls("wf-column", selected && "wf-column-selected")}>
@@ -85,11 +89,11 @@ export function StageColumn({
               >
                 <span className="action-index">{position + 1}</span>
                 <span className={`wf-action-icon ${binding.actionType === APPROVAL_ACTION ? "is-approval" : ""}`}>
-                  {binding.actionType === APPROVAL_ACTION ? <Hand size={17} /> : binding.actionType === "coding-agent" ? <Bot size={17} /> : binding.actionType === "shell" ? <Terminal size={17} /> : <Zap size={17} />}
+                  {binding.actionType === APPROVAL_ACTION ? <Hand size={17} /> : binding.actionType === CODING_AGENT_ACTION ? <Bot size={17} /> : binding.actionType === "shell" ? <Terminal size={17} /> : <Zap size={17} />}
                 </span>
                 <span className="wf-binding-content">
                   <span className="wf-binding-label">{binding.label || label(binding.actionType)}</span>
-                  <span className="wf-binding-type">{binding.actionType === "coding-agent" && LOOP_LABELS[String(binding.config.loopMode)] || label(binding.actionType)}</span>
+                  <span className="wf-binding-type">{typeLabel(binding.actionType, binding.config)}</span>
                 </span>
                 {!binding.enabled && <Tag>Off</Tag>}
                 <ChevronRight size={15} />
@@ -113,7 +117,17 @@ export function StageColumn({
   );
 }
 
-function AddAction({ actions, onAdd }: { actions: ActionTypeInfo[]; onAdd: (action: ActionTypeInfo) => void }) {
+function AddAction({ actions, onAdd }: { actions: ActionTypeInfo[]; onAdd: (action: ActionTypeInfo, preset?: ActionPreset) => void }) {
+  // Each loop is offered as a coding agent that starts in that mode; a plain one is a single run.
+  const agent = actions.find((action) => action.type === CODING_AGENT_ACTION);
+  const loops = agent
+    ? LOOP_MODES.filter((mode) => mode.id !== "single").map((mode) => ({
+        key: `${agent.type}:${mode.id}`,
+        label: mode.label,
+        hint: mode.hint,
+        onSelect: () => onAdd(agent, { label: mode.label, config: mode.preset }),
+      }))
+    : [];
   const trigger = (
     <Button icon={Plus} disabled={actions.length === 0}>
       Add action
@@ -126,7 +140,7 @@ function AddAction({ actions, onAdd }: { actions: ActionTypeInfo[]; onAdd: (acti
       label="Choose an action"
       width={340}
       trigger={trigger}
-      items={[...actions.flatMap(loopPresets), ...actions].map((action) => ({ key: `${action.type}:${action.label}`, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))}
+      items={[...loops, ...actions.map((action) => ({ key: action.type, label: action.label, hint: action.description, onSelect: () => onAdd(action) }))]}
     />
   );
 }

@@ -299,8 +299,8 @@ function WorkflowEditor({
                 edit(removeStage(draft, activeStage.id));
                 setSelection(null);
               }}
-              onAddBinding={(action) => {
-                const next = addBinding(draft, activeStage.id, action);
+              onAddBinding={(action, preset) => {
+                const next = addBinding(draft, activeStage.id, action, preset);
                 edit(next.draft);
                 setSelection({ kind: "binding", bindingId: next.bindingId });
               }}

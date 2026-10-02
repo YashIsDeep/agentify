@@ -90,23 +90,17 @@ describe("coding-agent action", () => {
     expect(failed.error).toContain("CI commands cannot contain template expressions");
   });
 
-  it("uses the explicit loop mode instead of inferring review type from the saved artifact", async () => {
-    const workflowId = agentWorkflow({ loopMode: "implementation", requireApproval: true, saveResultAs: "implementation.md" });
-    const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
-    await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
-    expect(artifact(task.id, "implementation.md")).toBe("Final implementation with reviewer fixes and passing checks.");
-  });
-
-  it("defaults a plan loop's final artifact to plan.md and reviews even without a human gate", async () => {
+  it("reviews a plan loop's work even without your approval, and saves only where it is told to", async () => {
     const workflowId = agentWorkflow({ loopMode: "plan", saveResultAs: "", prompt: "Plan [review:changes]" });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     await waitFor(() => q.visitDone(task.id));
-    expect(artifact(task.id, "plan.md")).toContain("# Revised plan");
-    expect(q.latest(task.id, "agent")?.outputs?.review).toMatchObject({ decision: "revised" });
+    const run = q.latest(task.id, "agent");
+    expect(run?.outputs).toMatchObject({ review: { decision: "revised" }, result: expect.stringContaining("# Revised plan"), autonomy: "read-only" });
+    expect(artifact(task.id, "plan.md")).toBeUndefined();
   });
 
   it("automatically corrects a rejected plan before exposing its approval", async () => {
-    const workflowId = agentWorkflow({ prompt: "Plan the widget [review:changes]", requireApproval: true });
+    const workflowId = agentWorkflow({ loopMode: "plan", prompt: "Plan the widget [review:changes]", requireApproval: true });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     const waiting = await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined);
     expect(artifact(task.id, "result.md")).toBe("# Revised plan\n\nAcceptance criteria: all requested behavior is verified.");
@@ -116,7 +110,7 @@ describe("coding-agent action", () => {
   });
 
   it("fails an invalid review without saving it over the document or offering approval", async () => {
-    const workflowId = agentWorkflow({ prompt: "Plan [review:invalid]", requireApproval: true });
+    const workflowId = agentWorkflow({ loopMode: "plan", prompt: "Plan [review:invalid]", requireApproval: true });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
     expect(artifact(task.id, "result.md")).toBeUndefined();
@@ -124,17 +118,18 @@ describe("coding-agent action", () => {
   });
 
   it("offers the code reviewer's final implementation for approval", async () => {
-    const workflowId = agentWorkflow({ requireApproval: true, autonomy: "autonomous", saveResultAs: "" });
+    const workflowId = agentWorkflow({ loopMode: "implementation", requireApproval: true, saveResultAs: "implementation.md" });
     const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir, useWorktree: false });
     const waiting = await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval" ? q.latest(task.id, "agent") : undefined);
-    expect(waiting.outputs).toMatchObject({ result: "Final implementation with reviewer fixes and passing checks.", review: { decision: "fixed" } });
+    expect(waiting.outputs).toMatchObject({ result: "Final implementation with reviewer fixes and passing checks.", review: { decision: "fixed" }, autonomy: "autonomous" });
+    expect(artifact(task.id, "implementation.md")).toBe(waiting.outputs?.result);
     const log = (await (await h.app.request(`/api/runs/${waiting.id}/log`)).json()) as RunLogLine[];
     expect(log.filter((line) => line.kind === "message").at(-1)?.text).toBe(waiting.outputs?.result);
     expect(log.filter((line) => line.kind === "message").some((line) => line.text.startsWith('{"decision"'))).toBe(false);
   });
 
-  it("supports explicitly opting out of automatic review", async () => {
-    const workflowId = agentWorkflow({ requireApproval: true, reviewBeforeApproval: false, prompt: "Plan [review:changes]" });
+  it("has no automatic review in a single run", async () => {
+    const workflowId = agentWorkflow({ loopMode: "single", requireApproval: true, prompt: "Plan [review:changes]" });
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
     expect(artifact(task.id, "result.md")).toContain("codex fresh");
@@ -317,7 +312,7 @@ describe("coding-agent action", () => {
       name: "Review loop", description: "",
       stages: [{ name: "Work", bindings: [
         { key: "agent", label: "Agent", actionType: "coding-agent", config: {
-          agent: "codex", prompt: "Implement {{task.title}}", saveResultAs: "result.md",
+          agent: "codex", loopMode: "plan", prompt: "Implement {{task.title}}", saveResultAs: "result.md",
           requireApproval: true, approvalInstructions: "Check {{task.title}}",
         } },
         { key: "afterApproval", label: "Continue workflow", actionType: "write-artifact", config: { name: "approved.md", content: "Approved" } },

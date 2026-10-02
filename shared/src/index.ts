@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./loops";
+
 // ---------- workspaces ----------
 
 export const workspaceSchema = z.object({
@@ -328,8 +330,11 @@ export interface ActionField {
   noneLabel?: string;
   /** `{{task.title}}` and friends are interpolated before the run. */
   templated?: boolean;
-  /** Only shown in the editor while the named boolean field of the same action is on. */
-  dependsOn?: string;
+  /**
+   * Only shown in the editor while another field of the same action holds one of these values (an
+   * absent value counts as that field's default). A hidden field keeps its value for when it shows again.
+   */
+  shownWhen?: { field: string; in: readonly unknown[] };
   /** Rarely changed; the editor folds it away under "Advanced" unless it differs from its default. */
   advanced?: boolean;
   keyLabel?: string;

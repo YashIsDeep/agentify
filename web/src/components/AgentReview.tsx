@@ -1,4 +1,4 @@
-import type { RunView, StageDef, TaskDetail } from "@wm/shared";
+import { loopPolicy, type RunView, type StageDef, type TaskDetail } from "@wm/shared";
 import { Check, Hand, Send, Undo2 } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useApi } from "../api-context";
@@ -28,7 +28,7 @@ export function AgentReview({ run, detail, stages }: { run: RunView; detail: Tas
   };
   const ready = isAwaitingApproval(run);
   const config = { ...run.config, ...(run.overrides ?? {}) };
-  const automaticReview = config.requireApproval && (config.loopMode === "plan" || config.loopMode === "implementation" || config.reviewBeforeApproval !== false);
+  const policy = loopPolicy(config);
   const ciPassed = ready && !!run.outputs?.ci;
   const reviewed = ready && (!!run.outputs?.review || ciPassed);
   const revisions = detail.timeline.filter((event) => event.runId === run.id && event.type === "run.changes-requested").length;
@@ -71,7 +71,7 @@ export function AgentReview({ run, detail, stages }: { run: RunView; detail: Tas
       <form className="approval-card agent-review" onSubmit={send} aria-label="Review agent work">
         <header className="approval-card-head" aria-live="polite">
           <Hand size={15} />
-          <strong>{ready ? reviewed ? "Final work ready for approval" : "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : config.loopMode === "ci" ? "Checking CI and fixing failures…" : automaticReview ? "Preparing and reviewing…" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
+          <strong>{ready ? reviewed ? "Final work ready for approval" : "Ready for review" : run.status === "quota-wait" ? "Waiting for usage limit" : policy.mode === "ci" ? "Checking CI and fixing failures…" : policy.review ? "Preparing and reviewing…" : revisions ? "Revising…" : "Preparing first draft…"}</strong>
           <span className="spacer" />
           <Tag>{ciPassed ? "CI passed" : reviewed ? "Agent reviewed" : revisions ? `Revision ${revisions}` : "First draft"}</Tag>
         </header>

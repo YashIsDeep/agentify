@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { type BetterSQLite3Database, drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { flattenPhases } from "./flatten-phases";
+import { convertLoopModes } from "./loop-modes";
 import * as schema from "./schema";
 
 export type Db = BetterSQLite3Database<typeof schema>;
@@ -19,5 +20,6 @@ export function openDb(file: string): { db: Db; sqlite: Sqlite } {
   // Before migrating: 0007 drops the phase tables this converts from.
   flattenPhases(sqlite);
   migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+  convertLoopModes(sqlite);
   return { db, sqlite };
 }

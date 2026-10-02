@@ -15,6 +15,8 @@ remaining open items in §8.
 | **Workflow** | Ordered list of stages. Many workflows exist; edited in the UI; stored in SQLite; defaults seeded on first run. |
 | **Stage** | A column. Has an ordered list of **actions**, run top to bottom. Optional WIP limit (warning only). |
 | **Action** | One entry in a stage's list (a *binding* in code): action type + config, enabled, *continue if this fails*. A coding agent can be told to wait for your approval; a standalone **Approval** is a checkpoint that follows no agent. |
+| **Loop mode** | How a coding agent works through its task: **single run** (one pass, no automatic review), **plan loop** (read-only draft, document review, revise), **implement loop** (autonomous, code review and fixes) or **CI loop** (publish, check, fix, rerun until the check command passes). |
+| **Loop policy** | What a loop mode implies: autonomy, the kind of review, whether the agent may ask you questions, its label and preset. One shared module (`loopPolicy` in `@wm/shared`); the server, the seed and the editor all ask it. |
 | **Task** | The thing that moves. Bound to one workflow at creation, forever. |
 | **Stage visit** | One stay of a task in a stage. Re-entering a stage creates a new visit (`attempt 2`) whose actions run again. A visit's runs, config included, are created when its actions start, so workflow edits apply from the next visit. |
 | **Timeline** | Append-only per-task event log, grouped by stage visit. |

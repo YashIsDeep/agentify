@@ -86,25 +86,25 @@ agent can be told to **wait for your approval** when it finishes, so nothing bel
 approve — or you ask for changes and the same agent picks them up. A standalone **Approval** action
 is for checkpoints that follow no agent, and moving on is just a *Move to stage* action at the end. Edits are a local draft until you press **Save**.
 
-**Automatic review before approval.** Coding-agent actions that wait for approval now run an
-independent review session first, using the same agent and model. Saved documents (or read-only
-results) are reviewed with a structured verdict: approved documents go straight to you; requested
-corrections go back to the author, and the revised document is reviewed again before coming to you. For implementation actions
-without a saved document, the reviewer fixes the code and runs relevant checks before presenting
-the final implementation. Review feedback stays in the transcript; it is never saved over the
-document. Invalid reviews or blocked fixes fail the action instead of asking you to approve
-unfinished work. Quota waits preserve the review or revision phase. This applies to existing
-approval-enabled actions too; turn off **Have an agent review and fix the work first** to opt out.
+**Loop modes.** Every coding agent runs in one loop mode, chosen under **Loop** in its settings.
+**Workflows → Add action** also offers each loop as a ready-made preset:
 
-**Plan, implement and CI loops.** In **Workflows → Add action**, choose one of the three loop presets:
+- **Single run:** one agent run with no automatic review. **Autonomy** decides whether it may edit the repository.
+- **Plan loop:** draft → independent review → revise → re-review, read-only. Requested corrections go back to the author, and the revised document is reviewed again. The preset saves the accepted document as `plan.md`.
+- **Implement loop:** implement → independent review → the reviewer fixes the code and runs relevant checks → repeat until accepted.
+- **CI loop:** publish (optional) → check → fix failures → publish → check again. Only a zero exit status from the check command counts as passing.
 
-- **Plan loop:** draft → independent review → revise → re-review. The accepted document is saved as `plan.md` by default and waits for your approval.
-- **Implement loop:** implement → review and fix → repeat until accepted. You approve the final implementation.
-- **CI loop:** publish (optional) → check → fix failures → publish → check again. Only a zero exit status from the check command counts as passing. You approve the final changes after CI passes.
+A loop's review happens whether or not the action waits for your approval; with **Wait for my
+approval** on, only the final work reaches you. Review feedback stays in the transcript and is
+never saved over the document. Invalid reviews or blocked fixes fail the action instead of asking
+you to approve unfinished work. Loops default to three correction attempts (configurable from
+1–10); reaching the limit fails the action with the remaining feedback. Quota waits keep the phase
+and attempt count.
 
-Loops default to three correction attempts (configurable from 1–10). Reaching the limit fails the
-action with the remaining feedback instead of approving it. Quota waits retain the phase and attempt
-count. Existing saved workflows keep their structure; choose a loop in an action's settings to change it.
+Coding agents saved before loop modes are converted when the server starts: one that waited for
+your approval with its automatic review on becomes a plan loop if it was read-only, otherwise an
+implement loop; any other becomes a single run. An autonomous agent that saved an artifact used to
+get a document review and now gets a code review; the server logs each one it converts that way.
 
 For **CI check command**, use the repository's local test/build commands, a remote CI check command,
 or a script combining both. The script must propagate failures, wait for remote checks on the current

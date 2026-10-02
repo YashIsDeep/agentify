@@ -18,6 +18,16 @@ export const advancedCustomised = (action: ActionTypeInfo, config: Record<string
   );
 
 /**
+ * A field can hang off another (an approval's instructions off "Wait for my approval", the CI
+ * commands off the CI loop): otherwise it is noise, and its value is kept for when it shows again.
+ */
+export function isShown(action: ActionTypeInfo, field: ActionField, config: Record<string, unknown>): boolean {
+  if (!field.shownWhen) return true;
+  const { field: name, in: values } = field.shownWhen;
+  return values.includes(config[name] ?? action.fields.find((other) => other.name === name)?.default);
+}
+
+/**
  * Renders an action's config form from the field metadata the server publishes: either its main
  * fields, or (`advanced`) the ones it marks as rarely changed.
  */
@@ -47,7 +57,6 @@ export function ConfigFields({
   const agentOf = (values: Record<string, unknown>) => stringOrNull(values.agent) || stageAgent;
   const set = (name: string, value: unknown) => {
     const next = { ...config, [name]: value };
-    if (name === "loopMode" && value !== "auto") next.autonomy = value === "plan" ? "read-only" : "autonomous";
     // An effort belongs to its model: drop it when the new agent or model doesn't offer it.
     if ((name === "agent" || name === "model") && typeof next.effort === "string") {
       next.effort = keepEffort(models.data, agentOf(next), stringOrNull(next.model), next.effort);
@@ -62,23 +71,14 @@ export function ConfigFields({
   // Only connections this action can actually authenticate with.
   const usable = connections.filter((connection) => connection.type === action.connectionType);
 
-  const shown = action.fields.filter(
-    (field) =>
-      !!field.advanced === advanced &&
-      (!field.name.startsWith("ci") || config.loopMode === "ci") &&
-      (field.name !== "autonomy" || !config.loopMode || config.loopMode === "auto") &&
-      (field.name !== "reviewBeforeApproval" || !config.loopMode || config.loopMode === "auto") &&
-      // A field can hang off a switch (an approval's instructions off "Wait for my approval"):
-      // with the switch off it is noise, and its value is kept for when it goes back on.
-      (!field.dependsOn || config[field.dependsOn] === true),
-  );
+  const shown = action.fields.filter((field) => !!field.advanced === advanced && isShown(action, field, config));
   const choice = shown.filter((field) => AGENT_CHOICE.has(field.kind));
   const render = (field: ActionField, note?: string) => (
     <ConfigField
       key={field.name}
       note={note}
       field={field}
-      value={config[field.name] ?? (["reviewBeforeApproval", "loopMode", "maxCorrections", "ciShell", "ciTimeoutSec"].includes(field.name) ? field.default : undefined)}
+      value={config[field.name]}
       stages={stages}
       connections={usable}
       // The model list depends on the agent chosen in this same form, the effort list on both.

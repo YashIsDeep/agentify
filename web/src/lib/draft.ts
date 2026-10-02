@@ -124,16 +124,27 @@ export function removeStage(draft: Draft, stageId: string): Draft {
   };
 }
 
+/** A named starting point for an action, such as a coding agent's Plan loop. */
+export interface ActionPreset {
+  label: string;
+  config: Record<string, unknown>;
+}
+
 /** Appends to the end of the stage's list, where it runs last. */
-export function addBinding(draft: Draft, stageId: string, action: ActionTypeInfo): { draft: Draft; bindingId: string } {
+export function addBinding(
+  draft: Draft,
+  stageId: string,
+  action: ActionTypeInfo,
+  preset?: ActionPreset,
+): { draft: Draft; bindingId: string } {
   const stage = draft.stages.find((s) => s.id === stageId);
   if (!stage) return { draft, bindingId: "" };
   const binding: DraftBinding = {
     id: newId(),
     key: uniqueKey(draft, action.type),
-    label: action.label,
+    label: preset?.label ?? action.label,
     actionType: action.type,
-    config: Object.fromEntries(action.fields.map((field) => [field.name, field.default])),
+    config: { ...Object.fromEntries(action.fields.map((field) => [field.name, field.default])), ...preset?.config },
     enabled: true,
     continueOnFailure: false,
   };

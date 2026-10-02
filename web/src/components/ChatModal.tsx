@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { RunLogLine, RunView, StageDef, TaskDetail } from "@wm/shared";
+import { loopPolicy, type RunLogLine, type RunView, type StageDef, type TaskDetail } from "@wm/shared";
 import {
   Check,
   ChevronDown,
@@ -109,7 +109,7 @@ export function ChatModal({
               <strong>{run.label}</strong>
               <span className="muted small">
                 {describeAgent(run, detail.task, stageDefaults(current.visit.stageId))}
-                {run.config.autonomy ? ` · ${run.config.autonomy}` : ""} · {runStatusLabel(run.status)}
+                {` · ${ranWithAutonomy(run)}`} · {runStatusLabel(run.status)}
                 {run.resumeAt && ` · resets ${clockTime(run.resumeAt, now)}`}
                 {run.startedAt && ` · ${runDuration(run, now)}`}
                 {usageSummary(run.usage) && ` · ${usageSummary(run.usage)}`}
@@ -353,3 +353,9 @@ const rawLine = (line: RunLogLine): string => {
   if (line.kind === "tool-result") return `  ↳ ${line.tool}${line.ok === false ? " failed" : ""}${line.text ? `: ${line.text}` : ""}`;
   return line.text || " ";
 };
+
+/** What the run used, as it recorded; one that hasn't run yet shows what its loop mode will use. */
+function ranWithAutonomy(run: RunView): string {
+  if (typeof run.outputs?.autonomy === "string") return run.outputs.autonomy;
+  return loopPolicy({ ...run.config, ...(run.overrides ?? {}) }).autonomy;
+}

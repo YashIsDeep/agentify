@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, resolveAgentChoice } from "@wm/shared";
+import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, LOOP_MODE_IDS, LOOP_MODES, loopPolicy, resolveAgentChoice } from "@wm/shared";
 import { z } from "zod";
 import { runAgent } from "../agents/run";
 import { runCiLoop, type CiCheckpoint, type CiResult } from "../agents/ci-loop";
@@ -25,7 +25,7 @@ const configSchema = z.object({
   model: z.string().default(""),
   effort: z.string().default(""),
   prompt: z.string().min(1),
-  loopMode: z.enum(["auto", "plan", "implementation", "ci"]).default("auto"),
+  loopMode: z.enum(LOOP_MODE_IDS).default("single"),
   maxCorrections: z.number().int().min(1).max(10).default(3),
   ciCheckCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
   ciPublishCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
@@ -34,8 +34,6 @@ const configSchema = z.object({
   autonomy: z.enum(["read-only", "autonomous"]).default("read-only"),
   /** Hold the run open when the agent finishes: nothing below it runs until you approve. */
   requireApproval: z.boolean().default(false),
-  /** Review and apply corrections before offering the final work for approval. */
-  reviewBeforeApproval: z.boolean().default(true),
   approvalInstructions: z.string().default(""),
   /** A stage id in the same workflow; empty offers no Send back at the approval. */
   sendBackTo: z.string().default(""),
@@ -52,6 +50,10 @@ type Config = z.output<typeof configSchema>;
 const MAX_RESULT_IN_OUTPUTS = 50_000;
 /** Largest prompt kept in the transcript; past this the point has been made and the log is just heavy. */
 const MAX_PROMPT_IN_LOG = 20_000;
+
+const LOOPS = { field: "loopMode", in: ["plan", "implementation", "ci"] } as const;
+const CI = { field: "loopMode", in: ["ci"] } as const;
+const AWAITING_APPROVAL = { field: "requireApproval", in: [true] } as const;
 
 /** Retry-dialog choice → task override → action → stage default → the agent's saved default → the CLI's own. */
 export function selectAgent(
@@ -73,23 +75,18 @@ export const codingAgentAction: ActionDefinition<Config> = {
   longRunning: true,
   fields: [
     {
-      name: "loopMode", label: "Loop", kind: "select", default: "auto",
-      options: [
-        { value: "auto", label: "Automatic review (existing behavior)" },
-        { value: "plan", label: "Plan loop — draft, review, revise" },
-        { value: "implementation", label: "Implement loop — implement, review, fix" },
-        { value: "ci", label: "CI loop — check, fix, rerun" },
-      ],
-      help: "Plan loops produce a document; implement and CI loops edit the repository. Your approval controls when the next action starts.",
+      name: "loopMode", label: "Loop", kind: "select", default: "single",
+      options: LOOP_MODES.map((mode) => ({ value: mode.id, label: mode.label })),
+      help: LOOP_MODES.map((mode) => `${mode.label}: ${mode.hint}`).join(" "),
     },
-    { name: "maxCorrections", label: "Maximum correction attempts", kind: "number", default: 3, help: "Stops with a failure and the remaining feedback when the limit is reached (1–10)." },
-    { name: "ciCheckCommand", label: "CI check command", kind: "textarea", default: "", placeholder: "npm test", help: "For CI loops: run local checks, remote checks, or a script combining both. It must wait for checks on the current commit and exit 0 only when all pass. Use WM_* environment variables, not templates." },
-    { name: "ciPublishCommand", label: "CI publish command", kind: "textarea", default: "", advanced: true, help: "Optional: runs before each check, including the first, to commit and push changes needed by remote CI. Leave blank for local checks or an already-published branch. Must be safe to repeat." },
-    { name: "ciShell", label: "CI command shell", kind: "select", default: "default", advanced: true, options: [
+    { name: "maxCorrections", label: "Maximum correction attempts", kind: "number", default: 3, shownWhen: LOOPS, help: "Stops with a failure and the remaining feedback when the limit is reached (1–10)." },
+    { name: "ciCheckCommand", label: "CI check command", kind: "textarea", default: "", shownWhen: CI, placeholder: "npm test", help: "Run local checks, remote checks, or a script combining both. It must wait for checks on the current commit and exit 0 only when all pass. Use WM_* environment variables, not templates." },
+    { name: "ciPublishCommand", label: "CI publish command", kind: "textarea", default: "", shownWhen: CI, advanced: true, help: "Optional: runs before each check, including the first, to commit and push changes needed by remote CI. Leave blank for local checks or an already-published branch. Must be safe to repeat." },
+    { name: "ciShell", label: "CI command shell", kind: "select", default: "default", shownWhen: CI, advanced: true, options: [
       { value: "default", label: "System default" }, { value: "powershell", label: "PowerShell" },
       { value: "cmd", label: "cmd.exe" }, { value: "bash", label: "Bash" }, { value: "sh", label: "sh" },
     ] },
-    { name: "ciTimeoutSec", label: "CI command timeout (seconds)", kind: "number", default: 1800, advanced: true },
+    { name: "ciTimeoutSec", label: "CI command timeout (seconds)", kind: "number", default: 1800, shownWhen: CI, advanced: true },
     {
       name: "prompt",
       label: "Prompt",
@@ -121,6 +118,8 @@ export const codingAgentAction: ActionDefinition<Config> = {
       label: "Autonomy",
       kind: "select",
       default: "read-only",
+      // Every loop decides its own autonomy.
+      shownWhen: { field: "loopMode", in: ["single"] },
       options: [
         { value: "read-only", label: "Read-only (cannot edit files)" },
         { value: "autonomous", label: "Autonomous (edits and commits)" },
@@ -135,20 +134,12 @@ export const codingAgentAction: ActionDefinition<Config> = {
       help: "Approve the final result and ask for revisions. Nothing after it runs until then.",
     },
     {
-      name: "reviewBeforeApproval",
-      label: "Have an agent review and fix the work first",
-      kind: "boolean",
-      default: true,
-      dependsOn: "requireApproval",
-      help: "A separate session reviews the work using this agent and model. Document feedback goes back to the author; code reviewers fix the implementation. Only the final work waits for you.",
-    },
-    {
       name: "approvalInstructions",
       label: "Approval instructions",
       kind: "textarea",
       default: "",
       templated: true,
-      dependsOn: "requireApproval",
+      shownWhen: AWAITING_APPROVAL,
       placeholder: "Read requirements.md, then approve.",
       help: "Shown on the task while it waits for you.",
     },
@@ -157,7 +148,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
       label: "Send back to",
       kind: "stage",
       default: "",
-      dependsOn: "requireApproval",
+      shownWhen: AWAITING_APPROVAL,
       noneLabel: "No Send back button",
       help: "Adds a Send back button next to Approve, for work that belongs at an earlier stage.",
     },
@@ -189,8 +180,9 @@ export const codingAgentAction: ActionDefinition<Config> = {
   ],
 
   async run({ config, run, task, artifactDir, env, log, signal, services }) {
-    const autonomy = config.loopMode === "plan" ? "read-only" : config.loopMode === "auto" ? config.autonomy : "autonomous";
-    const saveResultAs = config.saveResultAs || (config.loopMode === "plan" ? "plan.md" : "");
+    const policy = loopPolicy(config);
+    const { autonomy } = policy;
+    const { saveResultAs } = config;
     const stageDefaults = services.engine.stageAgentDefaultsForRun(run);
     const { agent, model, effort } = selectAgent(config, task, run.overrides, stageDefaults, (id) => services.agents.defaults(id));
     const adapter = services.agents.adapter(agent);
@@ -265,10 +257,10 @@ export const codingAgentAction: ActionDefinition<Config> = {
     // When a run goes wrong the prompt is as often the culprit as the agent — a template that
     // rendered an artifact as nothing leaves no other trace — and until now it was the one thing
     // the transcript never kept.
-    if (!checkpoint && config.loopMode !== "ci") log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
+    if (!checkpoint && policy.mode !== "ci") log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
 
     // Only agents that can be pointed at an MCP server per invocation can stop and ask.
-    const askUserUrl = adapter.supportsQuestions && config.loopMode !== "ci" ? services.questions.endpointFor(run.id) : null;
+    const askUserUrl = adapter.supportsQuestions && policy.asksQuestions ? services.questions.endpointFor(run.id) : null;
     if (askUserUrl) {
       services.questions.attachLog(run.id, log);
       log(`${adapter.label} can ask you questions while it works`);
@@ -317,7 +309,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
         if (check.code === null) throw new Error("CI command ended without an exit code");
         return { ok: check.code === 0, output: `Exit code: ${check.code}\n${stripAnsi(check.output).slice(-30_000)}` };
       };
-      let result: ReviewedResult & CiResult = config.loopMode === "ci"
+      let result: ReviewedResult & CiResult = policy.mode === "ci"
         ? await runCiLoop({
           context: config.prompt,
           maxCorrections: config.maxCorrections,
@@ -336,10 +328,8 @@ export const codingAgentAction: ActionDefinition<Config> = {
           },
         })
         : checkpoint?.draft ?? await runPrimary(prompt, resumeSessionId);
-      const reviewEnabled = config.loopMode === "plan" || config.loopMode === "implementation" ||
-        (config.loopMode === "auto" && config.requireApproval && config.reviewBeforeApproval);
-      if (result.ok && reviewEnabled) {
-        const document = config.loopMode === "plan" || (config.loopMode === "auto" && (!!saveResultAs || autonomy === "read-only"));
+      if (result.ok && policy.review) {
+        const document = policy.review === "document";
         result = await reviewResult({
           draft: result,
           checkpoint,
@@ -378,6 +368,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
         agent,
         model,
         effort,
+        autonomy,
         sessionId: result.sessionId,
         result: result.text.slice(0, MAX_RESULT_IN_OUTPUTS),
         ...(result.reviewCheckpoint ? { reviewCheckpoint: result.reviewCheckpoint } : {}),

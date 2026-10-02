@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { type AgentId, APPROVAL_ACTION } from "@wm/shared";
+import { type AgentId, APPROVAL_ACTION, LOOP_MODES, type LoopMode } from "@wm/shared";
 import { count } from "drizzle-orm";
+import { codingAgentAction } from "../actions/coding-agent";
+import { defaultConfig } from "../actions/types";
 import type { Db, Sqlite } from "../db/client";
 import * as s from "../db/schema";
 
@@ -110,28 +112,28 @@ export function seedDefaultWorkflows(db: Db, sqlite: Sqlite): boolean {
 
 // ---------------------------------------------------------------- default workflows
 
+/** A coding agent as the editor would add it in this loop mode, with the seed's own prompt and gate. */
 const codingAgent = ({
+  mode,
   approval,
   sendBackTo,
   ...config
 }: {
-  autonomy: "read-only" | "autonomous";
-  loopMode?: "plan" | "implementation";
+  mode: LoopMode;
   prompt: string;
   continueSession?: boolean;
   saveResultAs?: string;
+  ciCheckCommand?: string;
   /** Present: the agent waits for your sign-off when it finishes, showing this while it waits. */
   approval?: string;
   /** Offers a Send back to this stage beside Approve; changes go to the agent, not a stage. */
   sendBackTo?: string;
 }) => ({
+  ...defaultConfig(codingAgentAction),
+  ...LOOP_MODES.find((info) => info.id === mode)!.preset,
   agent: "claude",
-  model: "",
-  continueSession: false,
   saveResultAs: "",
   requireApproval: approval !== undefined,
-  loopMode: config.autonomy === "read-only" ? "plan" : "implementation",
-  maxCorrections: 3,
   approvalInstructions: approval ?? "",
   sendBackTo: sendBackTo ? `${STAGE_REF}${sendBackTo}` : "",
   ...config,
@@ -203,14 +205,16 @@ const submitMr = (): SeedStage => ({
     },
     jira("jiraInReview", "Jira → In Review", "In Review"),
     {
-      key: "ciLoop", label: "CI loop", actionType: "coding-agent", enabled: false,
-      config: {
-        agent: "claude", loopMode: "ci", maxCorrections: 3, autonomy: "autonomous",
+      key: "ciLoop",
+      label: "CI loop",
+      actionType: "coding-agent",
+      enabled: false,
+      config: codingAgent({
+        mode: "ci",
         prompt: "Resolve CI failures for {{task.title}}.\n\n{{task.description}}",
-        ciCheckCommand: 'echo Configure local and remote checks for this repository before enabling the CI loop. && exit 1',
-        ciPublishCommand: "", requireApproval: true,
-        approvalInstructions: "Review the final changes after CI passes. This does not merge the request.",
-      },
+        ciCheckCommand: "echo Configure local and remote checks for this repository before enabling the CI loop. && exit 1",
+        approval: "Review the final changes after CI passes. This does not merge the request.",
+      }),
     },
     approval("merged", "Merged", { instructions: "Approve once {{outputs.openMr.mrUrl}} is merged; that archives the task." }),
     {
@@ -242,7 +246,7 @@ export const DEFAULT_WORKFLOWS: SeedWorkflow[] = [
             label: "Draft requirements",
             actionType: "coding-agent",
             config: codingAgent({
-              autonomy: "read-only",
+              mode: "plan",
               saveResultAs: "requirements.md",
               approval: "Read requirements.md under Artifacts. Ask for changes and the agent redrafts it.",
               prompt: `You are solidifying requirements for a software task. Do not modify any files.
@@ -281,7 +285,7 @@ Then reply with only the Markdown requirements document, nothing before it, cont
             label: "Implement",
             actionType: "coding-agent",
             config: codingAgent({
-              autonomy: "autonomous",
+              mode: "implementation",
               continueSession: true,
               approval: "Review the final implementation in {{task.worktreePath}} after the agent has reviewed and fixed it.",
               prompt: `Implement the following task in this repository.
@@ -368,7 +372,7 @@ Finish with a short summary of what changed.`,
             label: "Investigate",
             actionType: "coding-agent",
             config: codingAgent({
-              autonomy: "read-only",
+              mode: "plan",
               saveResultAs: "reproduction.md",
               approval: "Read reproduction.md under Artifacts. Ask for changes and the agent digs further.",
               prompt: `Investigate this bug. Do not modify any files.
@@ -400,7 +404,7 @@ Reply with only a Markdown report: reproduction steps, expected vs actual behavi
             label: "Fix",
             actionType: "coding-agent",
             config: codingAgent({
-              autonomy: "autonomous",
+              mode: "implementation",
               continueSession: true,
               approval: "Review the final fix in {{task.worktreePath}} after the agent has reviewed and corrected it.",
               prompt: `Fix this bug in the repository.
