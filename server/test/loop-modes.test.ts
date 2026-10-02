@@ -110,6 +110,30 @@ describe("converting coding agents to explicit loop modes", () => {
     expect(logs).toEqual([]);
   });
 
+  it.each([
+    { autonomy: "read-only", expected: "plan" },
+    { requireApproval: false, expected: "single" },
+    { autonomy: "read-only", loopMode: "implementation", expected: "implementation" },
+  ])("preserves the effective legacy retry policy: %j", ({ expected, ...overrides }) => {
+    const { sqlite } = database();
+    insertBindings(sqlite);
+    sqlite.exec(`
+      INSERT INTO tasks (id, workflow_id, title, description, links, tags, status, current_stage_id, current_visit_id, created_at, updated_at)
+      VALUES ('t', 'w', 'Task', '', '[]', '[]', 'active', 's', 'v', 1, 1);
+      INSERT INTO stage_visits (id, task_id, stage_id, stage_name, attempt, entered_at)
+      VALUES ('v', 't', 's', 'Build', 1, 1);
+    `);
+    const id = sqlite.prepare(
+      "INSERT INTO action_runs (task_id, visit_id, binding_id, binding_key, label, action_type, config, overrides, batch_id, batch_position, status, created_at) VALUES ('t', 'v', 'implement', 'implement', 'implement', 'coding-agent', ?, ?, 'b', 0, 'failed', 1)",
+    ).run(JSON.stringify(OLD_AGENTS.implement), JSON.stringify(overrides)).lastInsertRowid;
+
+    convertLoopModes(sqlite, () => {});
+    const row = sqlite.prepare("SELECT config, overrides FROM action_runs WHERE id = ?").get(id) as { config: string; overrides: string };
+    expect({ ...JSON.parse(row.config), ...JSON.parse(row.overrides) }.loopMode).toBe(expected);
+    convertLoopModes(sqlite, () => {});
+    expect(sqlite.prepare("SELECT config, overrides FROM action_runs WHERE id = ?").get(id)).toEqual(row);
+  });
+
   it("moves a parked run's old saved progress into the shared shape, so it carries on where it stopped", () => {
     const { sqlite } = database();
     insertBindings(sqlite);

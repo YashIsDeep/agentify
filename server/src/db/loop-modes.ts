@@ -60,7 +60,9 @@ export function convertLoopModes(sqlite: Sqlite, log: (message: string) => void 
       const overrides = row.overrides ? (JSON.parse(row.overrides) as Config) : null;
       const config = convertLoopConfig(original).config;
       let convertedOverrides = overrides;
-      if (overrides && ("reviewBeforeApproval" in overrides || ("loopMode" in overrides && !isLoopMode(overrides.loopMode)))) {
+      // Infer the mode from the effective legacy config before converting either layer. Overrides
+      // could change approval or autonomy without mentioning the old review flag or loop mode.
+      if (overrides && (!isLoopMode(original.loopMode) || "reviewBeforeApproval" in overrides || ("loopMode" in overrides && !isLoopMode(overrides.loopMode)))) {
         const { reviewBeforeApproval: _dropped, ...rest } = overrides;
         convertedOverrides = { ...rest, loopMode: convertLoopConfig({ ...original, ...overrides }).config.loopMode };
       }
