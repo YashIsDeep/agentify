@@ -1,5 +1,5 @@
-import type { AgentUsage } from "@wm/shared";
 import { z } from "zod";
+import { authorTurn, type LoopInput, type LoopOutcome, outcome, type SavedLoop } from "./loops";
 import type { AgentRunResult } from "./run";
 
 const verdictSchema = z.object({
@@ -8,46 +8,37 @@ const verdictSchema = z.object({
   summary: z.string().optional(),
 }).refine((value) => value.decision === "approved" || !!value.feedback.trim(), "Changes require feedback");
 
-export interface ReviewCheckpoint {
-  phase: "review" | "revise";
-  draft: AgentRunResult;
-  feedback: string;
-  sessionId: string | null;
-  corrections?: number;
-}
+type ReviewSaved = Extract<SavedLoop, { kind: "review" }>;
 
-export type ReviewedResult = AgentRunResult & {
-  reviewCheckpoint?: ReviewCheckpoint;
-  review?: { decision: string; feedback: string };
-};
-
-/** A review is internal to the author's run. Only the final work reaches its approval gate. */
-export async function reviewResult(options: {
-  draft: AgentRunResult;
-  checkpoint?: ReviewCheckpoint;
-  document: boolean;
-  context: string;
-  maxCorrections?: number;
-  invoke(prompt: string, sessionId: string | null, phase: "review" | "revise"): Promise<AgentRunResult>;
-}): Promise<ReviewedResult> {
-  const { document, context, invoke } = options;
-  let draft = options.checkpoint?.draft ?? options.draft;
-  let usage: AgentUsage | null = options.checkpoint ? null : draft.usage;
-  let state: ReviewCheckpoint = options.checkpoint ?? { phase: "review", draft, feedback: "", sessionId: null };
-  const fail = (result: AgentRunResult): ReviewedResult => ({
-    ...result, text: draft.text, sessionId: draft.sessionId, usage,
-    reviewCheckpoint: { ...state, sessionId: result.sessionId },
+/**
+ * The author drafts, an independent reviewer checks it, and corrections go round until it is
+ * accepted or the limit is reached. A document goes back to its author to revise; code is fixed by
+ * the reviewer itself. Only the final work leaves the loop, so only it can reach an approval.
+ */
+export async function runReview(input: LoopInput, document: boolean): Promise<LoopOutcome> {
+  const { turns, maxCorrections } = input;
+  const context = `${input.instructions}${input.followUp ? `\n\nRequested changes:\n${input.followUp}` : ""}`;
+  let state: ReviewSaved = input.saved?.kind === "review"
+    ? input.saved
+    : { kind: "review", phase: "draft", corrections: 0, sessionId: null, draft: null, feedback: "" };
+  // A loop that stops early still hands back the latest draft, never the review.
+  const fail = (result: AgentRunResult): LoopOutcome => ({
+    ...outcome(result),
+    text: state.draft?.text ?? result.text,
+    sessionId: state.draft?.sessionId ?? result.sessionId,
+    saved: { ...state, sessionId: result.sessionId ?? state.sessionId },
   });
-  const call = async (prompt: string): Promise<AgentRunResult> => {
-    // A resumed reviewer must retain its role and output contract, even after a quota reset.
-    const result = await invoke(prompt, state.sessionId, state.phase);
-    usage = sumUsage(usage, result.usage);
-    return result;
-  };
 
-  const maxCorrections = options.maxCorrections ?? 3;
+  if (state.phase === "draft") {
+    const draft = await authorTurn(input, state.sessionId);
+    if (!draft.ok || draft.aborted) return { ...outcome(draft), saved: { ...state, sessionId: draft.sessionId ?? state.sessionId } };
+    state = { ...state, phase: "review", draft: { text: draft.text, sessionId: draft.sessionId }, sessionId: null };
+  }
+
   for (;;) {
+    const draft = state.draft!;
     if (state.phase === "review") {
+      input.notice("Independent agent review before your approval");
       const prompt = document
         ? `Review the following document independently against the task and repository. Do not edit files.
 Return only JSON: {"decision":"approved"|"changes_requested","feedback":"specific actionable corrections, or empty when approved"}.
@@ -70,7 +61,7 @@ ${draft.text}
 
 Previous review feedback:
 ${state.feedback}`;
-      const review = await call(prompt);
+      const review = await turns.turn(prompt, { session: state.sessionId, role: "reviewer" });
       if (!review.ok || review.aborted) return fail(review);
       if (!review.text.trim()) return fail({ ...review, ok: false, error: "Reviewer returned no result" });
       let verdict: z.infer<typeof verdictSchema>;
@@ -82,24 +73,28 @@ ${state.feedback}`;
       if (!document) {
         if (verdict.decision === "approved") {
           if (!verdict.summary?.trim()) return fail({ ...review, ok: false, error: "Reviewer must summarize the final implementation" });
-          return { ...review, text: verdict.summary, usage, review: { decision: "fixed", feedback: verdict.feedback } };
+          return { ...outcome(review), text: verdict.summary, review: { decision: "fixed", feedback: verdict.feedback } };
         }
-        if ((state.corrections ?? 0) >= maxCorrections) {
+        if (state.corrections >= maxCorrections) {
           return fail({ ...review, ok: false, error: `Implementation loop stopped after ${maxCorrections} correction attempts: ${verdict.feedback}` });
         }
-        state = { ...state, feedback: verdict.feedback, sessionId: review.sessionId, corrections: (state.corrections ?? 0) + 1 };
+        state = { ...state, feedback: verdict.feedback, sessionId: review.sessionId, corrections: state.corrections + 1 };
         continue;
       }
-      if (verdict.decision === "approved") return { ...draft, usage, review: {
-        decision: state.corrections ? "revised" : "approved", feedback: state.feedback,
-      } };
-      if ((state.corrections ?? 0) >= maxCorrections) {
+      if (verdict.decision === "approved") {
+        return {
+          ok: true, aborted: false, error: null, usageLimit: null, text: draft.text, sessionId: draft.sessionId,
+          review: { decision: state.corrections ? "revised" : "approved", feedback: state.feedback },
+        };
+      }
+      if (state.corrections >= maxCorrections) {
         return fail({ ...review, ok: false, error: `Plan loop stopped after ${maxCorrections} correction attempts: ${verdict.feedback}` });
       }
-      state = { phase: "revise", draft, feedback: verdict.feedback, sessionId: draft.sessionId, corrections: state.corrections ?? 0 };
+      state = { ...state, phase: "revise", feedback: verdict.feedback, sessionId: draft.sessionId };
     }
 
-    const revision = await call(`Revise your document to address all of the independent reviewer's feedback. Return only the complete updated document, not the review or a list of changes. Do not ask for approval.
+    input.notice("Author is applying the reviewer's corrections");
+    const revision = await turns.turn(`Revise your document to address all of the independent reviewer's feedback. Return only the complete updated document, not the review or a list of changes. Do not ask for approval.
 
 Original task instructions:
 ${context}
@@ -108,20 +103,15 @@ Previous document:
 ${draft.text}
 
 Reviewer feedback:
-${state.feedback}`);
+${state.feedback}`, { session: state.sessionId, role: "fixer" });
     if (!revision.ok || revision.aborted) return fail(revision);
     if (!revision.text.trim()) return fail({ ...revision, ok: false, error: "Author returned no revised document" });
-    draft = revision;
-    state = { phase: "review", draft, feedback: state.feedback, sessionId: null, corrections: (state.corrections ?? 0) + 1 };
+    state = {
+      ...state,
+      phase: "review",
+      draft: { text: revision.text, sessionId: revision.sessionId },
+      sessionId: null,
+      corrections: state.corrections + 1,
+    };
   }
-}
-
-export function sumUsage(a: AgentUsage | null, b: AgentUsage | null): AgentUsage | null {
-  if (!a) return b;
-  if (!b) return a;
-  const total: AgentUsage = { estimated: a.estimated || b.estimated };
-  for (const key of ["inputTokens", "cachedInputTokens", "outputTokens", "costUsd"] as const) {
-    if (a[key] !== undefined || b[key] !== undefined) total[key] = (a[key] ?? 0) + (b[key] ?? 0);
-  }
-  return total;
 }

@@ -1,4 +1,4 @@
-import { CODING_AGENT_ACTION, isLoopMode } from "@wm/shared";
+import { CODING_AGENT_ACTION, isLoopMode, loopPolicy } from "@wm/shared";
 import type { Sqlite } from "./client";
 
 /**
@@ -81,4 +81,64 @@ export function convertLoopConfig(original: Config): { config: Config; documentT
   }
   for (const [field, value] of Object.entries(LOOP_FIELDS)) config[field] ??= value;
   return { config, documentToCode };
+}
+
+type Outputs = Record<string, unknown>;
+
+/**
+ * Runs parked on a usage limit before loops shared one shape kept their place as `reviewCheckpoint`
+ * or `ciCheckpoint`, or (a single run, or a review loop still on its draft) only as the run's
+ * session. Each becomes `outputs.loop`, so the run picks up where it stopped when the limit resets.
+ * Only parked runs resume from their outputs; a retry starts a new run. Converting twice changes nothing.
+ */
+export function convertSavedLoops(sqlite: Sqlite): void {
+  const parked = sqlite
+    .prepare(
+      `SELECT id, config, overrides, outputs, session_id FROM action_runs
+       WHERE action_type = ? AND status = 'quota-wait' AND json_type(coalesce(outputs, '{}'), '$.loop') IS NULL`,
+    )
+    .all(CODING_AGENT_ACTION) as { id: number; config: string; overrides: string | null; outputs: string | null; session_id: string | null }[];
+  const update = sqlite.prepare("UPDATE action_runs SET outputs = ? WHERE id = ?");
+  sqlite.transaction(() => {
+    for (const row of parked) {
+      const { reviewCheckpoint, ciCheckpoint, ...outputs } = (row.outputs ? JSON.parse(row.outputs) : {}) as Outputs;
+      const loop = savedLoopFrom(reviewCheckpoint, ciCheckpoint, row);
+      if (loop) update.run(JSON.stringify({ ...outputs, loop }), row.id);
+    }
+  })();
+}
+
+function savedLoopFrom(
+  review: unknown,
+  ci: unknown,
+  row: { config: string; overrides: string | null; session_id: string | null },
+): Outputs | null {
+  if (review && typeof review === "object") {
+    const old = review as { phase: string; draft?: { text?: string; sessionId?: string | null }; feedback?: string; sessionId?: string | null; corrections?: number };
+    return {
+      kind: "review",
+      phase: old.phase === "revise" ? "revise" : "review",
+      corrections: old.corrections ?? 0,
+      sessionId: old.sessionId ?? null,
+      draft: { text: old.draft?.text ?? "", sessionId: old.draft?.sessionId ?? null },
+      feedback: old.feedback ?? "",
+    };
+  }
+  if (ci && typeof ci === "object") {
+    const old = ci as { phase?: string; corrections?: number; failure?: string; sessionId?: string | null; summary?: string };
+    return {
+      kind: "ci",
+      phase: old.phase === "check" || old.phase === "fix" ? old.phase : "publish",
+      corrections: old.corrections ?? 0,
+      sessionId: old.sessionId ?? null,
+      failure: old.failure ?? "",
+      summary: old.summary ?? "",
+    };
+  }
+  if (!row.session_id) return null;
+  const policy = loopPolicy({ ...(JSON.parse(row.config) as Config), ...(row.overrides ? (JSON.parse(row.overrides) as Config) : {}) });
+  // A CI loop always kept a checkpoint once it had a session; without one, its checks simply run again.
+  if (policy.mode === "ci") return null;
+  if (policy.review) return { kind: "review", phase: "draft", corrections: 0, sessionId: row.session_id, draft: null, feedback: "" };
+  return { kind: "single", phase: "author", corrections: 0, sessionId: row.session_id };
 }

@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, LOOP_MODE_IDS, LOOP_MODES, loopPolicy, resolveAgentChoice } from "@wm/shared";
+import { dirname } from "node:path";
+import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, LOOP_MODE_IDS, LOOP_MODES, loopPolicy, resolveAgentChoice, type RunLogLine } from "@wm/shared";
 import { z } from "zod";
-import { runAgent } from "../agents/run";
-import { runCiLoop, type CiCheckpoint, type CiResult } from "../agents/ci-loop";
-import { reviewResult, type ReviewCheckpoint, type ReviewedResult } from "../agents/review";
-import type { AgentEvent } from "../agents/types";
+import { type CiCommands, runCi } from "../agents/ci-loop";
+import { type LoopInput, runSingle, type SavedLoop } from "../agents/loops";
+import { runReview } from "../agents/review";
+import { cliTurns, scratchPrefix } from "../agents/turns";
 import type { TaskRow } from "../db/schema";
 import { resolveInside } from "../paths";
 import { ActionError, type ActionDefinition, type RunLog, UsageLimitError } from "./types";
@@ -16,8 +16,6 @@ import { runProcess, stripAnsi } from "../lib/process";
 
 /** How long a run waits when its agent hits a usage limit without saying when it resets. */
 export const UNKNOWN_RESET_WAIT_MS = 30 * 60_000;
-/** Sent in place of the prompt when a run picks its own session back up after a usage limit. */
-export const CONTINUE_AFTER_LIMIT = "Your usage limit has reset. Carry on with the task from where you stopped.";
 
 const configSchema = z.object({
   /** Blank takes the stage's default agent, else Claude Code. */
@@ -48,8 +46,6 @@ type Config = z.output<typeof configSchema>;
 
 /** Largest final message kept in outputs (the artifact always gets the full text). */
 const MAX_RESULT_IN_OUTPUTS = 50_000;
-/** Largest prompt kept in the transcript; past this the point has been made and the log is just heavy. */
-const MAX_PROMPT_IN_LOG = 20_000;
 
 const LOOPS = { field: "loopMode", in: ["plan", "implementation", "ci"] } as const;
 const CI = { field: "loopMode", in: ["ci"] } as const;
@@ -219,151 +215,61 @@ export const codingAgentAction: ActionDefinition<Config> = {
       );
     }
 
-    const checkpoint = run.outputs?.reviewCheckpoint as ReviewCheckpoint | undefined;
-    let prompt = config.prompt;
-    let resumeSessionId: string | null = null;
-    // Changes asked for at this run's own approval: your words are the prompt, and the agent picks
-    // the session it just used back up, so one run stays one conversation.
-    const followUp = run.followUp?.trim();
-    if (!checkpoint && followUp) {
-      log({ kind: "answer", stream: "info", text: followUp });
-      if (run.sessionId && run.outputs?.agent === agent) {
-        resumeSessionId = run.sessionId;
-        prompt = followUp;
-        log(`Carrying on in ${adapter.label} session ${run.sessionId} with your changes`);
-      } else {
-        const previous = typeof run.outputs?.result === "string" ? run.outputs.result : "";
-        prompt = previous ? `Your previous answer was:\n\n${previous}\n\n---\n\n${followUp}` : followUp;
-        log(`Starting a fresh ${adapter.label} session with your changes`);
-      }
-    } else if (!checkpoint && run.sessionId && run.outputs?.agent === agent) {
-      // A usage limit parked this very run after its session had started, so pick that session back up.
-      resumeSessionId = run.sessionId;
-      prompt = CONTINUE_AFTER_LIMIT;
-      log(`Resuming ${adapter.label} session ${run.sessionId} now the usage limit has reset`);
-    } else if (!checkpoint && config.continueSession) {
-      const previous = services.engine.previousAgentSession(task.id, run.bindingKey, run.id);
-      if (previous && previous.agent === agent) {
-        resumeSessionId = previous.sessionId;
-        log(`Resuming ${adapter.label} session ${previous.sessionId}`);
-      } else if (previous?.result) {
-        const by = previous.agent ? services.agents.adapter(previous.agent).label : "another agent";
-        prompt = `A previous attempt at this step (by ${by}) ended with:\n\n${previous.result}\n\n---\n\n${prompt}`;
-        log(`Agent changed; starting a fresh ${adapter.label} session with the previous result as context`);
-      }
-    }
+    // Saved progress is this run's own, picked up after a usage limit; it belongs to the agent that made it.
+    const saved = run.outputs?.agent === agent ? (run.outputs?.loop as SavedLoop | undefined) : undefined;
+    const followUp = run.followUp?.trim() || null;
+    const opening = openingTurn({
+      prompt: config.prompt,
+      continueSession: config.continueSession,
+      followUp,
+      run: { sessionId: run.sessionId, agent: run.outputs?.agent, result: run.outputs?.result },
+      agent,
+      previous: () => services.engine.previousAgentSession(task.id, run.bindingKey, run.id),
+      label: (id) => services.agents.adapter(id).label,
+    });
+    if (saved) log(`Picking this run back up where it stopped, in ${adapter.label}`);
+    else for (const note of opening.notes) logNote(log, note);
 
-    // Recorded after every rewrite above, so what the transcript shows is exactly what the CLI got.
-    // When a run goes wrong the prompt is as often the culprit as the agent — a template that
-    // rendered an artifact as nothing leaves no other trace — and until now it was the one thing
-    // the transcript never kept.
-    if (!checkpoint && policy.mode !== "ci") log({ kind: "prompt", stream: "info", text: promptForLog(prompt) });
-
-    // Only agents that can be pointed at an MCP server per invocation can stop and ask.
-    const askUserUrl = adapter.supportsQuestions && policy.asksQuestions ? services.questions.endpointFor(run.id) : null;
-    if (askUserUrl) {
-      services.questions.attachLog(run.id, log);
-      log(`${adapter.label} can ask you questions while it works`);
-    }
-
-    log(`${adapter.label}${model ? ` · ${model}` : ""}${effort ? ` · ${effort}` : ""} · ${autonomy} · ${cwd}`);
-    // Autonomous runs never reach here in this state; a read-only one only reads, so this is a note
-    // rather than a failure — but the path above is the checkout the whole team works in, and seeing
-    // why it is there beats wondering whether the worktree silently went missing.
-    if (strayFromWorktree) {
-      log("That is the repository's own checkout: this task is set to use a worktree, but no “Ensure worktree” action has run above this one. Read-only, so nothing there is edited.");
-    }
-    const logEvent = eventLogger(log);
+    const turns = cliTurns({
+      adapter,
+      cli,
+      model,
+      effort,
+      policy,
+      cwd,
+      env,
+      signal,
+      inactivityTimeoutMs: config.inactivityTimeoutSec * 1000,
+      timeoutMs: config.timeoutSec ? config.timeoutSec * 1000 : undefined,
+      scratchPrefix: scratchPrefix(services.paths.runsDir(task.id), run.id),
+      log,
+      introduction: [
+        `${adapter.label}${model ? ` · ${model}` : ""}${effort ? ` · ${effort}` : ""} · ${autonomy} · ${cwd}`,
+        // Autonomous runs never reach here in this state; a read-only one only reads, so this is a
+        // note rather than a failure — but the path above is the checkout the whole team works in,
+        // and seeing why it is there beats wondering whether the worktree silently went missing.
+        ...(strayFromWorktree
+          ? ["That is the repository's own checkout: this task is set to use a worktree, but no “Ensure worktree” action has run above this one. Read-only, so nothing there is edited."]
+          : []),
+      ],
+      runId: run.id,
+      questions: services.questions,
+    });
     try {
-      const runPrimary = (primaryPrompt: string, primarySession: string | null) => runAgent({
-        adapter,
-        cli,
-        invocation: {
-          prompt: primaryPrompt,
-          model,
-          effort,
-          autonomy,
-          resumeSessionId: primarySession,
-          cwd,
-          scratchDir: join(services.paths.runsDir(task.id), `${run.id}-agent`),
-          askUserUrl,
-        },
-        env,
-        signal,
-        inactivityTimeoutMs: config.inactivityTimeoutSec * 1000,
-        timeoutMs: config.timeoutSec ? config.timeoutSec * 1000 : undefined,
-        isIdleExpected: () => services.questions.isWaiting(run.id),
-        onEvent: logEvent,
-        onStderr: (line) => log(line, "stderr"),
-      });
-      const runCiCommand = async (command: string) => {
-        log(`$ ${command}`);
-        const check = await runProcess({
-          ...invocation(config.ciShell, command), cwd, signal,
-          env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
-          timeoutMs: config.ciTimeoutSec * 1000,
-          onLine: (text, stream) => log(stripAnsi(text), stream),
-        });
-        if (check.aborted) throw new Error("Cancelled");
-        if (check.timedOut) throw new Error(`CI command timed out after ${config.ciTimeoutSec}s`);
-        if (check.code === null) throw new Error("CI command ended without an exit code");
-        return { ok: check.code === 0, output: `Exit code: ${check.code}\n${stripAnsi(check.output).slice(-30_000)}` };
+      const input: LoopInput = {
+        turns,
+        opening,
+        followUp,
+        instructions: config.prompt,
+        maxCorrections: config.maxCorrections,
+        saved,
+        notice: (text) => log({ kind: "notice", stream: "info", text }),
       };
-      let result: ReviewedResult & CiResult = policy.mode === "ci"
-        ? await runCiLoop({
-          context: config.prompt,
-          maxCorrections: config.maxCorrections,
-          checkpoint: run.outputs?.ciCheckpoint as CiCheckpoint | undefined,
-          followUp,
-          check: () => runCiCommand(config.ciCheckCommand),
-          publish: async () => {
-            if (!config.ciPublishCommand.trim()) return;
-            const published = await runCiCommand(config.ciPublishCommand);
-            if (!published.ok) throw new Error(`CI publish command failed:\n${published.output}`);
-          },
-          fix: (fixPrompt, sessionId) => {
-            log({ kind: "notice", stream: "info", text: "CI loop: fixing failures before rerunning checks" });
-            log({ kind: "prompt", stream: "info", text: promptForLog(fixPrompt) });
-            return runPrimary(fixPrompt, sessionId);
-          },
-        })
-        : checkpoint?.draft ?? await runPrimary(prompt, resumeSessionId);
-      if (result.ok && policy.review) {
-        const document = policy.review === "document";
-        result = await reviewResult({
-          draft: result,
-          checkpoint,
-          document,
-          maxCorrections: config.maxCorrections,
-          context: `${config.prompt}${followUp ? `\n\nRequested changes:\n${followUp}` : ""}`,
-          invoke: async (reviewPrompt, sessionId, phase) => {
-            const logReviewEvent = eventLogger(log);
-            log({ kind: "notice", stream: "info", text: phase === "review"
-              ? "Independent agent review before your approval"
-              : "Author is applying the reviewer's corrections" });
-            log({ kind: "prompt", stream: "info", text: promptForLog(reviewPrompt) });
-            return runAgent({
-              adapter, cli, env, signal,
-              invocation: {
-                prompt: reviewPrompt, model, effort,
-                autonomy: document ? "read-only" : autonomy,
-                resumeSessionId: sessionId, cwd,
-                scratchDir: join(services.paths.runsDir(task.id), `${run.id}-${phase}`),
-                // Internal review and correction must not become a user approval conversation.
-                askUserUrl: null,
-              },
-              inactivityTimeoutMs: config.inactivityTimeoutSec * 1000,
-              timeoutMs: config.timeoutSec ? config.timeoutSec * 1000 : undefined,
-              onEvent: (event) => {
-                // Keep internal verdicts inspectable in collapsed output, not as the work to approve.
-                if (phase === "review" && event.kind === "message") log(event.text, "stdout");
-                else logReviewEvent(event);
-              },
-              onStderr: (line) => log(line, "stderr"),
-            });
-          },
-        });
-      }
+      const result = policy.mode === "ci"
+        ? await runCi(input, ciCommands(config, { cwd, env, signal, log }))
+        : policy.review
+          ? await runReview(input, policy.review === "document")
+          : await runSingle(input);
       const outputs: Record<string, unknown> = {
         agent,
         model,
@@ -371,13 +277,12 @@ export const codingAgentAction: ActionDefinition<Config> = {
         autonomy,
         sessionId: result.sessionId,
         result: result.text.slice(0, MAX_RESULT_IN_OUTPUTS),
-        ...(result.reviewCheckpoint ? { reviewCheckpoint: result.reviewCheckpoint } : {}),
+        ...(result.saved ? { loop: result.saved } : {}),
         ...(result.review ? { review: result.review } : {}),
-        ...(result.ciCheckpoint ? { ciCheckpoint: result.ciCheckpoint } : {}),
         ...(result.ci ? { ci: result.ci } : {}),
         loopMode: config.loopMode,
       };
-      const details = { outputs, sessionId: result.sessionId, usage: result.usage };
+      const details = { outputs, sessionId: result.sessionId, usage: turns.usage };
       if (result.aborted) throw new Error("Cancelled");
       if (!result.ok && result.usageLimit) {
         const now = Date.now();
@@ -402,59 +307,89 @@ export const codingAgentAction: ActionDefinition<Config> = {
         outputs.artifact = saveResultAs;
         log(`Saved the final message to ${saveResultAs}`);
       }
-      return { ...details, summary: usageSummary(result.usage) };
+      return { ...details, summary: usageSummary(turns.usage) };
     } finally {
-      // Whatever happened, the endpoint dies with the run and nothing is left blocked on it.
-      services.questions.cancelForRun(run.id, "The run ended");
-      services.questions.releaseToken(run.id);
-      services.questions.detachLog(run.id);
+      turns.close();
     }
   },
 };
 
-/** The prompt as the transcript keeps it, saying so itself when it was too long to keep whole. */
-function promptForLog(prompt: string): string {
-  if (prompt.length <= MAX_PROMPT_IN_LOG) return prompt;
-  return `${prompt.slice(0, MAX_PROMPT_IN_LOG)}\n\n[Truncated: the prompt was ${prompt.length} characters and only the first ${MAX_PROMPT_IN_LOG} are kept here.]`;
-}
+type Note = string | Omit<RunLogLine, "at">;
+
+const logNote = (log: RunLog, note: Note) => (typeof note === "string" ? log(note) : log(note));
 
 /**
- * Turns the CLI's event stream into transcript entries. Each keeps its shape — a message stays one
- * message however many lines it spans, and a tool result carries the id of the call it answers —
- * so the chat view can render the run as the conversation it was.
+ * How the author's first turn starts, when the run has no saved progress. Changes you asked for at
+ * this run's own approval are the prompt, in the session it just used, so one run stays one
+ * conversation; "Continue the previous session" resumes this action's last session on the task.
+ * Either way, a different agent can't resume another's session, so it gets the earlier result as context.
  */
-function eventLogger(log: RunLog) {
-  let loggedSession = false;
-  return (event: AgentEvent) => {
-    switch (event.kind) {
-      case "message":
-        log({ kind: "message", stream: "stdout", text: event.text });
-        break;
-      case "tool":
-        if (event.status === "started") {
-          log({ kind: "tool", stream: "info", text: event.detail ?? "", tool: event.name, ref: event.id });
-        } else {
-          log({
-            kind: "tool-result",
-            stream: event.status === "failed" ? "stderr" : "info",
-            text: event.detail ?? "",
-            tool: event.name,
-            ref: event.id,
-            ok: event.status !== "failed",
-          });
-        }
-        break;
-      case "error":
-        log({ kind: "notice", stream: "stderr", text: event.message });
-        break;
-      case "session":
-        if (!loggedSession) log({ kind: "notice", stream: "info", text: `Session ${event.sessionId}` });
-        loggedSession = true;
-        break;
-      case "raw":
-        log({ stream: "stdout", text: event.text });
-        break;
+export function openingTurn(options: {
+  prompt: string;
+  continueSession: boolean;
+  followUp: string | null;
+  /** What this run recorded when it last ran. */
+  run: { sessionId: string | null; agent: unknown; result: unknown };
+  agent: AgentId;
+  previous(): { sessionId: string; agent: AgentId | null; result: string | null } | undefined;
+  label(agent: AgentId): string;
+}): { prompt: string; session: string | null; notes: Note[] } {
+  const { followUp, run, agent, label } = options;
+  if (followUp) {
+    const answer: Note = { kind: "answer", stream: "info", text: followUp };
+    if (run.sessionId && run.agent === agent) {
+      return { prompt: followUp, session: run.sessionId, notes: [answer, `Carrying on in ${label(agent)} session ${run.sessionId} with your changes`] };
     }
+    const previous = typeof run.result === "string" ? run.result : "";
+    return {
+      prompt: previous ? `Your previous answer was:\n\n${previous}\n\n---\n\n${followUp}` : followUp,
+      session: null,
+      notes: [answer, `Starting a fresh ${label(agent)} session with your changes`],
+    };
+  }
+  if (options.continueSession) {
+    const previous = options.previous();
+    if (previous && previous.agent === agent) {
+      return { prompt: options.prompt, session: previous.sessionId, notes: [`Resuming ${label(agent)} session ${previous.sessionId}`] };
+    }
+    if (previous?.result) {
+      const by = previous.agent ? label(previous.agent) : "another agent";
+      return {
+        prompt: `A previous attempt at this step (by ${by}) ended with:\n\n${previous.result}\n\n---\n\n${options.prompt}`,
+        session: null,
+        notes: [`Agent changed; starting a fresh ${label(agent)} session with the previous result as context`],
+      };
+    }
+  }
+  return { prompt: options.prompt, session: null, notes: [] };
+}
+
+/** The CI loop's commands, run in the agent's working directory with the task's WM_* variables. */
+function ciCommands(
+  config: Config,
+  context: { cwd: string; env: Record<string, string>; signal: AbortSignal; log: RunLog },
+): CiCommands {
+  const { cwd, signal, log } = context;
+  const run = async (command: string) => {
+    log(`$ ${command}`);
+    const result = await runProcess({
+      ...invocation(config.ciShell, command), cwd, signal,
+      env: { ...process.env, ...context.env, GIT_TERMINAL_PROMPT: "0" },
+      timeoutMs: config.ciTimeoutSec * 1000,
+      onLine: (text, stream) => log(stripAnsi(text), stream),
+    });
+    if (result.aborted) throw new Error("Cancelled");
+    if (result.timedOut) throw new Error(`CI command timed out after ${config.ciTimeoutSec}s`);
+    if (result.code === null) throw new Error("CI command ended without an exit code");
+    return { ok: result.code === 0, output: `Exit code: ${result.code}\n${stripAnsi(result.output).slice(-30_000)}` };
+  };
+  return {
+    check: () => run(config.ciCheckCommand),
+    publish: async () => {
+      if (!config.ciPublishCommand.trim()) return;
+      const published = await run(config.ciPublishCommand);
+      if (!published.ok) throw new Error(`CI publish command failed:\n${published.output}`);
+    },
   };
 }
 

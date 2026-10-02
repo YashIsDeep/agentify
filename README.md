@@ -185,7 +185,8 @@ web/      React + Vite UI: board (dnd-kit), task drawer, live updates over SSE (
 server/
   src/engine/    engine.ts (state transitions), runner.ts (executes runs), template.ts
   src/actions/   action plugins + registry
-  src/agents/    one adapter per CLI (spawn args + output parser), resolution, run orchestration
+  src/agents/    one adapter per CLI (spawn args + output parser), resolution; turns.ts (every call a
+                 coding-agent run makes to its agent) and the loops built on it (loops.ts, review.ts, ci-loop.ts)
   src/integrations/  one adapter + API client per service (Jira, Linear, Notion)
   src/api/       Hono routes, localhost-only guard, SSE
   src/services/  workflows.ts (workflow editing + validation), connections.ts, archive, settings

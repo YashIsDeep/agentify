@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb, type Sqlite } from "../src/db/client";
-import { convertLoopModes } from "../src/db/loop-modes";
+import { convertLoopModes, convertSavedLoops } from "../src/db/loop-modes";
 import { removeDir } from "./helpers";
 
 const dirs: string[] = [];
@@ -108,5 +108,39 @@ describe("converting coding agents to explicit loop modes", () => {
     convertLoopModes(reopened, (message) => logs.push(message));
     expect(reopened.prepare("SELECT id, config FROM action_bindings ORDER BY id").all()).toEqual(before);
     expect(logs).toEqual([]);
+  });
+
+  it("moves a parked run's old saved progress into the shared shape, so it carries on where it stopped", () => {
+    const { sqlite } = database();
+    insertBindings(sqlite);
+    convertLoopModes(sqlite, () => {});
+    const run = (statement: string, ...params: unknown[]) => sqlite.prepare(statement).run(...params);
+    run("INSERT INTO tasks (id, workflow_id, title, description, links, tags, status, current_stage_id, current_visit_id, created_at, updated_at) VALUES ('t', 'w', 'Task', '', '[]', '[]', 'active', 's', 'v', 1, 1)");
+    run("INSERT INTO stage_visits (id, task_id, stage_id, stage_name, attempt, entered_at) VALUES ('v', 't', 's', 'Build', 1, 1)");
+    const parked = (binding: string, outputs: object, sessionId: string | null, status = "quota-wait") =>
+      Number(run(
+        "INSERT INTO action_runs (task_id, visit_id, binding_id, binding_key, label, action_type, config, outputs, session_id, batch_id, batch_position, status, created_at) VALUES ('t', 'v', ?, ?, ?, 'coding-agent', ?, ?, ?, 'b', 0, ?, 1)",
+        binding, binding, binding, JSON.stringify(configOf(sqlite, "action_bindings", binding)), JSON.stringify(outputs), sessionId, status,
+      ).lastInsertRowid);
+    const review = parked("requirements", { agent: "codex", reviewCheckpoint: { phase: "revise", draft: { ok: true, text: "# Draft", sessionId: "author" }, feedback: "Add tests", sessionId: "author", corrections: 1 } }, "author");
+    const ci = parked("ciLoop", { agent: "codex", ciCheckpoint: { phase: "fix", corrections: 2, failure: "red", sessionId: "fixer", summary: "" } }, "fixer");
+    const draft = parked("implement", { agent: "codex" }, "s-draft");
+    const single = parked("unattended", { agent: "codex" }, "s-single");
+    const finished = parked("unattended", { agent: "codex", result: "Done" }, "s-done", "succeeded");
+
+    convertSavedLoops(sqlite);
+    const outputs = (id: number) => JSON.parse((sqlite.prepare("SELECT outputs FROM action_runs WHERE id = ?").get(id) as { outputs: string }).outputs);
+    expect(outputs(review)).toEqual({
+      agent: "codex",
+      loop: { kind: "review", phase: "revise", corrections: 1, sessionId: "author", draft: { text: "# Draft", sessionId: "author" }, feedback: "Add tests" },
+    });
+    expect(outputs(ci)).toEqual({ agent: "codex", loop: { kind: "ci", phase: "fix", corrections: 2, sessionId: "fixer", failure: "red", summary: "" } });
+    expect(outputs(draft).loop).toEqual({ kind: "review", phase: "draft", corrections: 0, sessionId: "s-draft", draft: null, feedback: "" });
+    expect(outputs(single).loop).toEqual({ kind: "single", phase: "author", corrections: 0, sessionId: "s-single" });
+    expect(outputs(finished)).toEqual({ agent: "codex", result: "Done" });
+
+    const before = sqlite.prepare("SELECT id, outputs FROM action_runs ORDER BY id").all();
+    convertSavedLoops(sqlite);
+    expect(sqlite.prepare("SELECT id, outputs FROM action_runs ORDER BY id").all()).toEqual(before);
   });
 });
