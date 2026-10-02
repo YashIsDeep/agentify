@@ -9,6 +9,7 @@ import { createHarness, type Harness, inspect, removeDir, waitFor } from "./help
 import { resetTestActions } from "./test-actions";
 
 const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex.mjs", import.meta.url));
+const FAKE_CLAUDE = fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url));
 
 describe("usage limit detection", () => {
   const now = new Date(2026, 8, 11, 10, 0).getTime();
@@ -166,5 +167,37 @@ describe("waiting for a usage limit", () => {
     expect(result).toContain("codex resumed codex-thread-1");
     expect(result).toContain(`prompt:${CONTINUE_AFTER_LIMIT}`);
     expect(q.runs(first.id, "agent")).toHaveLength(1);
+  });
+
+  it("does not give a different agent the previous agent's saved session after a quota hold", async () => {
+    h.agents.setPathOverride("codex", FAKE_CODEX);
+    h.agents.setPathOverride("claude", FAKE_CLAUDE);
+    const workflowId = h.addWorkflow({
+      name: "Switch agents", description: "",
+      stages: [{ name: "Work", bindings: [{
+        key: "agent", label: "Agent", actionType: "coding-agent",
+        config: { agent: "codex", prompt: "LIMIT me", saveResultAs: "result.md" },
+      }] }],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Switch" });
+    const parked = await waitFor(() => q.latest(task.id, "agent")?.status === "quota-wait" ? q.latest(task.id, "agent") : undefined);
+    expect(parked.outputs?.loop).toMatchObject({ kind: "single", sessionId: "codex-thread-1" });
+
+    h.engine.updateTask(task.id, { agentOverride: "claude" });
+    h.agents.setQuotaHold("claude", Date.now() + 3_600_000);
+    h.engine.resumeQuotaRun(parked.id);
+    const held = await waitFor(() => {
+      const run = q.latest(task.id, "agent");
+      return run?.status === "quota-wait" && run.outputs?.agent === "claude" ? run : undefined;
+    });
+    expect(held.sessionId).toBeNull();
+    expect(held.outputs?.loop).toBeUndefined();
+
+    expect((await h.app.request(`/api/runs/${held.id}/resume`, { method: "POST" })).status).toBe(200);
+    await waitFor(() => q.visitDone(task.id));
+    const finished = q.latest(task.id, "agent")!;
+    expect(finished.sessionId).toBe("claude-session-1");
+    expect(finished.outputs?.result).toContain("claude fresh");
+    expect(finished.outputs?.result).toContain("prompt:LIMIT me");
   });
 });

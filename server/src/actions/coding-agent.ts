@@ -190,9 +190,13 @@ export const codingAgentAction: ActionDefinition<Config> = {
     // Another run already hit this agent's limit: wait alongside it rather than spend a request finding out.
     const heldUntil = services.agents.quotaHold(agent);
     if (heldUntil) {
+      const sameAgent = run.outputs?.agent === agent;
+      const { loop: _loop, sessionId: _sessionId, ...previousOutputs } = run.outputs ?? {};
+      // A task override may have switched agents while this run was parked. Keep the previous
+      // answer as context, but never relabel its session or saved loop as the new agent's work.
       throw new UsageLimitError(`${adapter.label}'s usage limit is still in effect`, heldUntil, {
-        sessionId: run.sessionId,
-        outputs: { ...(run.outputs ?? {}), agent, model, effort },
+        sessionId: sameAgent ? run.sessionId : null,
+        outputs: { ...(sameAgent ? run.outputs : previousOutputs), agent, model, effort },
       });
     }
     const cli = services.agents.resolve(agent);

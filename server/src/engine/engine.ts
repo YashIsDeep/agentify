@@ -729,7 +729,7 @@ export class Engine {
             error: result.error,
             // A run parked before it could start keeps what its earlier attempt recorded.
             outputs: result.outputs ?? run.outputs,
-            sessionId: result.sessionId ?? run.sessionId,
+            sessionId: result.sessionId === undefined ? run.sessionId : result.sessionId,
             usage: addUsage(run.usage, result.usage),
           })
           .where(eq(s.actionRuns.id, run.id))
