@@ -17,7 +17,7 @@ export async function runCi(input: LoopInput, commands: CiCommands): Promise<Loo
   const { followUp } = input;
   const state: CiSaved = input.saved?.kind === "ci"
     ? { ...input.saved }
-    : { kind: "ci", phase: followUp ? "fix" : "publish", corrections: 0, failure: followUp ?? "", sessionId: null, summary: "" };
+    : { kind: "ci", phase: followUp ? "fix" : "publish", corrections: 0, failure: followUp ?? "", sessionId: input.opening.session, summary: "" };
   const base = (): LoopOutcome => ({ ok: true, aborted: false, text: state.summary, sessionId: state.sessionId, error: null, usageLimit: null });
   for (;;) {
     if (state.phase === "publish") {
@@ -43,7 +43,7 @@ Do not weaken or disable checks to get a passing result. Do not push or merge; t
 Finish with a summary of the changes and validation. The check command, not your summary, determines whether this loop passes.
 
 Task instructions:
-${input.instructions}
+${input.instructions}${state.corrections === 0 && input.opening.prompt !== input.instructions ? `\n\nPrior work and requested changes:\n${input.opening.prompt}` : ""}
 
 Failing checks or requested changes:
 ${state.failure}`, { session: state.sessionId, role: "fixer" });

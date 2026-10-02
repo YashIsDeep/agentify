@@ -68,4 +68,21 @@ describe("CI loop", () => {
     expect(turns.calls[0]).toMatchObject({ session: null, prompt: expect.stringContaining("Handle empty input") });
     expect(result.ci?.corrections).toBe(1);
   });
+
+  it("continues the prior session when applying requested changes", async () => {
+    const turns = scriptedTurns(fixed());
+    await runCi(loopInput(turns, {
+      followUp: "Handle empty input",
+      opening: { prompt: "Handle empty input", session: "previous-fixer" },
+    }), { check: async () => green, publish: async () => {} });
+    expect(turns.calls[0]).toMatchObject({ session: "previous-fixer", prompt: expect.stringContaining("Handle empty input") });
+  });
+
+  it("includes the previous agent's answer when a fresh fixer takes over", async () => {
+    const turns = scriptedTurns(fixed());
+    await runCi(loopInput(turns, {
+      opening: { prompt: "Previous answer: changed the parser.\n\nBuild it", session: null },
+    }), { check: async () => turns.calls.length ? green : red, publish: async () => {} });
+    expect(turns.calls[0]).toMatchObject({ session: null, prompt: expect.stringContaining("Previous answer: changed the parser.") });
+  });
 });
