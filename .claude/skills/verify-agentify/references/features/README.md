@@ -31,7 +31,7 @@ surfaces (board ↔ drawer ↔ chat ↔ conversations), also read `multi-surface
 
 For a broad regression, walk this map from top to bottom, then finish with `multi-surface-journeys.md`.
 
-**Preflight.** Do these in order, and stop if one fails.
+**Preflight.** `npm run qa` does steps 1–5 in one go from a terminal: it checks the tree, runs typecheck and tests, builds or reuses the sandbox, writes the run sheet `docs/QA-<date>-sweep.md` with one row per feature file, serves on 2816 until Ctrl+C and prints agent readiness. Options: `--reset` (new sandbox), `--skip-checks`, `--allow-dirty`, `--no-server`. By hand, do these in order, and stop if one fails.
 
 1. Pin the target: `git status --short` is empty, and the report records `git rev-parse --short HEAD`.
 2. `npm run typecheck` and `npm test` pass.
