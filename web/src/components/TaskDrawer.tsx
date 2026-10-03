@@ -12,7 +12,7 @@ import { Button, IconButton, isDialogOpen, Splash, Tabs } from "../ui";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { ChatModal } from "./ChatModal";
 import { DetailsPanel } from "./DetailsPanel";
-import { ArchiveDialog, RetryDialog } from "./dialogs";
+import { ArchiveDialog, CancelRunDialog, RetryDialog } from "./dialogs";
 import { MoveDialog } from "./MoveDialog";
 import { StagePanel } from "./StagePanel";
 import { StatusBadge } from "./StatusBadge";
@@ -260,6 +260,7 @@ function AgentChat({
   const api = useApi();
   const action = useTaskAction();
   const [retrying, setRetrying] = useState<RunView | null>(null);
+  const [cancelling, setCancelling] = useState<RunView | null>(null);
 
   return (
     <>
@@ -271,11 +272,12 @@ function AgentChat({
         busy={action.isPending}
         onSelect={onSelect}
         onRetry={setRetrying}
-        onCancel={(run) => action.mutate(() => api.cancelRun(run.id))}
+        onCancel={setCancelling}
         onResume={(run) => action.mutate(() => api.resumeRun(run.id))}
         onClose={onClose}
       />
       {retrying && <RetryDialog run={retrying} onClose={() => setRetrying(null)} />}
+      {cancelling && <CancelRunDialog run={cancelling} onClose={() => setCancelling(null)} />}
     </>
   );
 }

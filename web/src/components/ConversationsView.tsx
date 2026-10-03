@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { TaskSummary, WorkflowDef } from "@wm/shared";
+import { isApprovalOnly, type TaskSummary, type WorkflowDef } from "@wm/shared";
 import { Hand, MessageCircleQuestion, MessagesSquare, PanelRightOpen, Play } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../api-context";
@@ -9,6 +9,7 @@ import { describeAgent } from "../lib/runs";
 import { Button, Callout, EmptyState, Page } from "../ui";
 import { AgentReview } from "./AgentReview";
 import { Transcript } from "./ChatModal";
+import { ApprovalDecision } from "./StagePanel";
 import { RunStatusIcon } from "./StatusBadge";
 import { describe } from "./StatusCounters";
 
@@ -124,6 +125,12 @@ function Conversation({
   const run = visit?.runs.find((entry) => entry.id === runId);
   const now = useNow(run?.status === "running" ? 1000 : 30_000);
   const stageDefaults = workflow?.stages.find((stage) => stage.id === visit?.stageId)?.agentDefaults;
+  // A standalone Approval has no chat, but its decision is just two buttons: they belong here too.
+  const currentVisit = visits.find((v) => v.id === detail.data?.task.currentVisitId);
+  const approval = task.badgeDetail?.reason === "approval" && !run
+    ? currentVisit?.runs.find((entry) => entry.status === "awaiting-approval" && isApprovalOnly(entry))
+    : undefined;
+  const stageName = (stageId: string) => workflow?.stages.find((stage) => stage.id === stageId)?.name ?? "another stage";
 
   return (
     <section className="chat-main" aria-label={task.title}>
@@ -155,10 +162,14 @@ function Conversation({
           <Transcript key={run.id} run={run} now={now} archived={false} />
           <AgentReview key={`review-${run.id}`} run={run} detail={detail.data} stages={workflow?.stages ?? []} />
         </>
+      ) : approval && detail.data ? (
+        <div className="chat-body">
+          <ApprovalDecision run={approval} task={detail.data.task} stageName={stageName} />
+        </div>
       ) : detail.isLoading ? (
         <p className="chat-body muted small">Loading…</p>
       ) : (
-        // A standalone Approval, or a stage waiting to be started: no agent to talk to, so it's handled on the task.
+        // A stage waiting to be started: the header's Start button is the whole decision.
         <p className="chat-body muted">
           {task.badgeDetail?.reason === "start" ? `${describe(task)}.` : `${describe(task)}. Open the task to decide.`}
         </p>

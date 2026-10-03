@@ -52,9 +52,10 @@
   /* Text, from most to least prominent. */
   --text: #202f38;
   --text-2: #53646e;
-  --text-3: #647580;
+  --text-3: #5d6e79;
 
-  /* Accent and status colours, each with a soft background to sit on. */
+  /* Accent and status colours, each with a soft background to sit on. Every one reads at 4.5:1 or
+     better on its own soft background and on the page, so a status badge passes WCAG AA. */
   --accent: #168576;
   --accent-soft: #e4f2ef;
   --accent-text: #116e62;
@@ -62,13 +63,13 @@
   /* Filled accent surfaces (the primary button, the current step): one deep teal in both themes,
      so white text on it always reads. */
   --primary: #168576;
-  --success: #14995f;
+  --success: #0e7a4b;
   --success-soft: #e2f5ec;
-  --warn: #b0680a;
+  --warn: #965a08;
   --warn-soft: #fdf1dc;
-  --danger: #d63f45;
+  --danger: #c0353b;
   --danger-soft: #fdeaeb;
-  --info: #0b7a93;
+  --info: #0a6f86;
   --info-soft: #e0f3f7;
 
   /* Terminal output keeps a dark background in both themes. */
@@ -98,6 +99,14 @@
   --drawer-width: min(640px, calc(100vw - 20px));
 
   color-scheme: light;
+}
+
+/* A fingertip needs more room than a pointer: controls grow on touch screens. */
+@media (pointer: coarse) {
+  :root {
+    --control-sm: 32px;
+    --control-md: 40px;
+  }
 }
 
 :root[data-theme="dark"] {

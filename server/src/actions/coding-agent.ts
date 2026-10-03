@@ -69,6 +69,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
   description: "Runs Claude Code, Codex, OpenCode or Cursor Agent headlessly in the task's worktree.",
   configSchema,
   longRunning: true,
+  validateBeforeRender: true,
   fields: [
     {
       name: "loopMode", label: "Loop", kind: "select", default: "single",

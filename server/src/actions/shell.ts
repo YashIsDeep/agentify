@@ -24,6 +24,7 @@ export const shellAction: ActionDefinition<Config> = {
   description:
     "Runs a command. Task data is available as WM_* environment variables; write a JSON object to $WM_OUTPUT_FILE to set outputs.",
   configSchema,
+  validateBeforeRender: true,
   fields: [
     { name: "command", label: "Command", kind: "textarea", default: "", placeholder: "npm test", help: "Read task data through WM_* environment variables. Template expressions are not allowed in shell commands." },
     {

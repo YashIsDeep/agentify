@@ -1,6 +1,5 @@
 import {
-  APPROVAL_ACTION,
-  CODING_AGENT_ACTION,
+  actionGate,
   type AgentChoiceLayer,
   type BindingDef,
   isAgentId,
@@ -9,6 +8,7 @@ import {
   type StageDef,
 } from "@wm/shared";
 import { Hand, ListOrdered } from "lucide-react";
+import { useActionTypeLabel } from "../hooks";
 import { agentLabel } from "../lib/agents";
 import { IconButton, Popover } from "../ui";
 
@@ -20,6 +20,7 @@ import { IconButton, Popover } from "../ui";
 export function StageActions({ stage, stages }: { stage: StageDef; stages: StageDef[] }) {
   const enabled = stage.bindings.filter((binding) => binding.enabled);
   const switchedOff = stage.bindings.filter((binding) => !binding.enabled);
+  const typeLabel = useActionTypeLabel();
   if (enabled.length === 0) return null;
 
   return (
@@ -38,8 +39,8 @@ export function StageActions({ stage, stages }: { stage: StageDef; stages: Stage
             <span className="stage-flow-body">
               <span className="stage-flow-label">{binding.label}</span>
               <span className="stage-flow-notes">
-                <span className="stage-flow-type">{binding.actionType}</span>
-                {waitsForYou(binding) && (
+                <span>{typeLabel(binding.actionType)}</span>
+                {actionGate(binding.actionType, binding.config) && (
                   <span className="stage-flow-wait">
                     <Hand size={11} aria-hidden="true" />
                     Waits for you
@@ -60,14 +61,10 @@ export function StageActions({ stage, stages }: { stage: StageDef; stages: Stage
   );
 }
 
-/** An Approval action, or a coding agent told to hold its run open until you sign the work off. */
-const waitsForYou = (binding: BindingDef): boolean =>
-  binding.actionType === APPROVAL_ACTION || (binding.actionType === CODING_AGENT_ACTION && binding.config.requireApproval === true);
-
 /** What else the workflow pins on this action: where an approval can send back, the agent, failures. */
 function notesFor(binding: BindingDef, stage: StageDef, stages: StageDef[]): string[] {
   const notes: string[] = [];
-  const sendBackTo = typeof binding.config.sendBackTo === "string" ? binding.config.sendBackTo : "";
+  const sendBackTo = actionGate(binding.actionType, binding.config)?.sendBackTo;
   if (sendBackTo) notes.push(`Can send back to ${stages.find((candidate) => candidate.id === sendBackTo)?.name ?? "another stage"}`);
   const agent = describeStageAgent(binding, stage);
   if (agent) notes.push(agent);

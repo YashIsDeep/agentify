@@ -30,7 +30,13 @@ export function StatusBadge({ badge, detail }: { badge: TaskBadge; detail?: Badg
     badge === "running" ? <LoaderCircle size={11} className="spin" aria-hidden="true" /> : badge === "needs-you" ? Hand : badge === "quota" ? Hourglass : undefined;
   return (
     <Badge tone={BADGE_TONES[badge]} icon={icon} title={resetAt ? "Waiting for a usage limit to reset" : undefined}>
-      {resetAt ? `Resets ${clockTime(resetAt)}` : badge === "needs-you" && detail?.reason === "approval" ? "Ready for review" : BADGE_LABELS[badge]}
+      {resetAt
+        ? `Resets ${clockTime(resetAt)}`
+        : badge === "needs-you" && detail?.reason === "approval"
+          ? "Ready for review"
+          : badge === "failed" && detail?.cancelled
+            ? "Cancelled"
+            : BADGE_LABELS[badge]}
     </Badge>
   );
 }

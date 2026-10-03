@@ -108,9 +108,8 @@ export class Runner {
       const scope = engine.buildScope(run);
       const onMiss = (expression: string) => misses.add(expression);
       const rawConfig = { ...run.config, ...(run.overrides ?? {}) };
-      // Validate shell source before interpolation, including old snapshots and retry overrides.
-      // After rendering, attacker-controlled task text is indistinguishable from trusted code.
-      if (run.actionType === "shell" || run.actionType === "coding-agent") definition.configSchema.parse(rawConfig);
+      // Includes old snapshots and retry overrides.
+      if (definition.validateBeforeRender) definition.configSchema.parse(rawConfig);
       const parsed = definition.configSchema.safeParse(renderDeep(rawConfig, scope, onMiss));
       if (!parsed.success) throw new Error(`Invalid configuration: ${z.prettifyError(parsed.error)}`);
 

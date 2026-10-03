@@ -1,7 +1,5 @@
 import {
-  APPROVAL_ACTION,
   NO_AGENT_DEFAULTS,
-  type RunStatus,
   type RunView,
   resolveAgentChoice,
   type StageAgentDefaults,
@@ -12,33 +10,8 @@ import {
 } from "@wm/shared";
 import { agentLabel } from "./agents";
 
-const ACTIVE: RunStatus[] = ["waiting", "queued", "running", "awaiting-approval", "quota-wait"];
-const RETRYABLE: RunStatus[] = ["failed", "cancelled", "interrupted", "skipped"];
-const SKIPPABLE: RunStatus[] = ["failed", "cancelled", "interrupted"];
-
-export const isActiveRun = (run: RunView) => ACTIVE.includes(run.status);
-export const isRetryable = (run: RunView) => RETRYABLE.includes(run.status);
-/** Holding up the list; Skip carries on past it. */
-export const isSkippable = (run: RunView) => SKIPPABLE.includes(run.status);
-/** A standalone Approval action, as opposed to a coding agent holding its own run open. */
-export const isApprovalRun = (run: Pick<RunView, "actionType">) => run.actionType === APPROVAL_ACTION;
 /** Finished, and waiting on your decision — either kind. */
 export const isAwaitingApproval = (run: Pick<RunView, "status">) => run.status === "awaiting-approval";
-
-/** Retries share a batch slot; keep only the newest attempt per slot, in creation order. */
-export function latestAttempts(runs: RunView[]): RunView[] {
-  const bySlot = new Map<string, RunView>();
-  for (const run of runs) {
-    const slot = `${run.batchId}:${run.batchPosition}`;
-    const existing = bySlot.get(slot);
-    if (!existing || run.id > existing.id) bySlot.set(slot, run);
-  }
-  return [...bySlot.values()].sort((a, b) => a.id - b.id);
-}
-
-/** A stage visit's actions in list order, newest attempt of each. */
-export const actionList = (visit: VisitView): RunView[] =>
-  latestAttempts(visit.runs).sort((a, b) => a.batchPosition - b.batchPosition || a.id - b.id);
 
 /** What runs, in order, when a task enters the stage. */
 export const entryActionLabels = (stage: StageDef): string[] =>

@@ -104,12 +104,15 @@ export function DialogBody({ lead, children, className }: { lead?: ReactNode; ch
  */
 export function DialogFooter({
   onCancel,
+  cancelLabel = "Cancel",
   busy = false,
   start,
   children,
 }: {
   /** Omit when the dialog's own button is the only way out. */
   onCancel?: () => void;
+  /** When the main action is itself a cancel ("Cancel action"), say what backing out keeps instead. */
+  cancelLabel?: string;
   busy?: boolean;
   start?: ReactNode;
   children: ReactNode;
@@ -120,7 +123,7 @@ export function DialogFooter({
       <span className="spacer" />
       {onCancel && (
         <Button variant="ghost" disabled={busy} onClick={onCancel}>
-          Cancel
+          {cancelLabel}
         </Button>
       )}
       {children}

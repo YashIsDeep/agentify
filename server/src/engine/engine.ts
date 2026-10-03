@@ -3,17 +3,22 @@ import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import {
   ACTIVE_RUN_STATUSES,
+  addRoundUsage,
   AGENT_IDS,
   type AgentId,
-  APPROVAL_ACTION,
-  CODING_AGENT_ACTION,
   type BadgeDetail,
+  bankRoundTime,
+  canRetry,
+  canSkip,
   type CreateTaskInput,
   createTaskSchema,
   isAgentId,
+  isBlocking,
+  isSettled,
+  latestAttempts,
   NO_STAGE_AGENT_DEFAULTS,
-  RETRYABLE_RUN_STATUSES,
-  type RunStatus,
+  runGate,
+  type RunUsage,
   type ServerEvent,
   type StageAgentDefaults,
   type TaskBadge,
@@ -62,14 +67,14 @@ export type RunResult =
       outputs?: Record<string, unknown>;
       summary?: string;
       sessionId?: string | null;
-      usage?: Record<string, unknown> | null;
+      usage?: RunUsage | null;
     }
   | {
       ok: false;
       error: string;
       outputs?: Record<string, unknown>;
       sessionId?: string | null;
-      usage?: Record<string, unknown> | null;
+      usage?: RunUsage | null;
       /** A usage limit, not a failure: the run waits and is queued again at this time. */
       resumeAt?: number;
     };
@@ -460,7 +465,7 @@ export class Engine {
   retryRun(runId: number, overrides?: Record<string, unknown>): RunRow {
     return this.tx(() => {
       const run = this.getRun(runId);
-      if (!RETRYABLE_RUN_STATUSES.includes(run.status)) {
+      if (!canRetry(run)) {
         throw new EngineError(`Cannot retry a ${run.status} run`, 409);
       }
       const task = this.getActiveTask(run.taskId);
@@ -477,7 +482,7 @@ export class Engine {
   skipRun(runId: number): RunRow {
     return this.tx(() => {
       const run = this.getRun(runId);
-      if (run.status !== "failed" && run.status !== "cancelled" && run.status !== "interrupted") {
+      if (!canSkip(run)) {
         throw new EngineError(`Only a failed, cancelled or interrupted action can be skipped, not a ${run.status} one`, 409);
       }
       const task = this.getActiveTask(run.taskId);
@@ -526,7 +531,7 @@ export class Engine {
   sendBack(runId: number, options: { note?: string } = {}): { stageId: string; stageName: string } {
     return this.tx(() => {
       const { run, task } = this.waitingApproval(runId);
-      const target = String({ ...run.config, ...(run.overrides ?? {}) }.sendBackTo ?? "");
+      const target = runGate(run)?.sendBackTo;
       if (!target) throw new EngineError(`${run.label} has no Send back`, 409);
       const stage = this.db.select().from(s.stages).where(eq(s.stages.id, target)).get();
       if (!stage || stage.workflowId !== task.workflowId) {
@@ -564,7 +569,7 @@ export class Engine {
   requestChanges(runId: number, note: string): RunRow {
     return this.tx(() => {
       const { run, task } = this.waitingApproval(runId);
-      if (run.actionType !== CODING_AGENT_ACTION) {
+      if (!runGate(run)?.conversational) {
         throw new EngineError(`${run.label} has no agent to send changes to; approve it or send it back`, 400);
       }
       const updated = this.db
@@ -693,7 +698,7 @@ export class Engine {
 
       if (result.ok) {
         // An agent set to wait for your sign-off stops here instead: the list stays put until you decide.
-        const gated = this.wantsApproval(run);
+        const gated = runGate(run)?.when === "after";
         const outputs = result.outputs ?? {};
         const finished = this.db
           .update(s.actionRuns)
@@ -702,7 +707,7 @@ export class Engine {
             endedAt: now,
             outputs: gated ? { ...outputs, instructions: this.renderInstructions(run) } : outputs,
             sessionId: result.sessionId ?? null,
-            usage: addUsage(run.usage, result.usage),
+            usage: addRoundUsage(run.usage, result.usage),
             followUp: null,
           })
           .where(eq(s.actionRuns.id, run.id))
@@ -730,7 +735,7 @@ export class Engine {
             // A run parked before it could start keeps what its earlier attempt recorded.
             outputs: result.outputs ?? run.outputs,
             sessionId: result.sessionId === undefined ? run.sessionId : result.sessionId,
-            usage: addUsage(run.usage, result.usage),
+            usage: addRoundUsage(run.usage, result.usage),
           })
           .where(eq(s.actionRuns.id, run.id))
           .run();
@@ -750,7 +755,7 @@ export class Engine {
             error: result.error,
             outputs: result.outputs ?? null,
             sessionId: result.sessionId ?? null,
-            usage: addUsage(run.usage, result.usage),
+            usage: addRoundUsage(run.usage, result.usage),
             followUp: null,
           })
           .where(eq(s.actionRuns.id, run.id))
@@ -959,7 +964,7 @@ export class Engine {
    * you straight away, with its instructions rendered now so they describe the task as it stands.
    */
   private activate(run: RunRow): RunRow {
-    if (run.actionType !== APPROVAL_ACTION) {
+    if (runGate(run)?.when !== "instead") {
       const queued = this.db.update(s.actionRuns).set({ status: "queued" }).where(eq(s.actionRuns.id, run.id)).returning().get();
       this.publish({ type: "run.changed", taskId: run.taskId, runId: run.id });
       this.publish({ type: "runs.queued" });
@@ -977,11 +982,10 @@ export class Engine {
     return waiting;
   }
 
-  /** A coding agent's sign-off keeps its own field, so it and the agent's prompt don't collide. */
+  /** The gate's instructions, rendered as the wait starts so they describe the task as it stands. */
   private renderInstructions(run: RunRow): string {
-    const config = { ...run.config, ...(run.overrides ?? {}) };
-    const instructions = run.actionType === CODING_AGENT_ACTION ? config.approvalInstructions : config.instructions;
-    if (typeof instructions !== "string" || !instructions) return "";
+    const instructions = runGate(run)?.instructionsTemplate;
+    if (!instructions) return "";
     try {
       return renderString(instructions, this.buildScope(run));
     } catch {
@@ -1030,12 +1034,6 @@ export class Engine {
     for (const run of this.db.select().from(s.actionRuns).where(and(...conditions)).all()) {
       this.cancelRunRow(run, reason);
     }
-  }
-
-  /** Whether this coding agent was told to stop for your sign-off rather than simply succeed. */
-  private wantsApproval(run: RunRow): boolean {
-    if (run.actionType !== CODING_AGENT_ACTION) return false;
-    return { ...run.config, ...(run.overrides ?? {}) }.requireApproval === true;
   }
 
   /** The same row goes back in the queue, so its transcript and session carry on where they stopped. */
@@ -1112,29 +1110,6 @@ export class Engine {
 
 // ---------------------------------------------------------------- helpers
 
-/** Done with, as far as the list is concerned: the next action may start. */
-function isSettled(run: RunRow): boolean {
-  return run.status === "succeeded" || run.status === "skipped" || (run.status === "failed" && run.continueOnFailure);
-}
-
-/** Holds up the list until you retry or skip it. */
-function isBlocking(run: RunRow): boolean {
-  return (
-    (run.status === "failed" && !run.continueOnFailure) || run.status === "interrupted" || run.status === "cancelled"
-  );
-}
-
-/** Retries share a batch slot; only the newest attempt in each slot counts. */
-function latestAttempts(runs: RunRow[]): RunRow[] {
-  const bySlot = new Map<string, RunRow>();
-  for (const run of runs) {
-    const slot = `${run.batchId}:${run.batchPosition}`;
-    const existing = bySlot.get(slot);
-    if (!existing || run.id > existing.id) bySlot.set(slot, run);
-  }
-  return [...bySlot.values()];
-}
-
 /** One badge per task, and what it is about, so the board and the header's counts always agree. */
 function computeBadge(
   task: TaskRow,
@@ -1148,7 +1123,7 @@ function computeBadge(
   const approval = latest.find((run) => run.status === "awaiting-approval");
   if (approval) {
     // An agent's review happens in its chat; a standalone Approval action has none.
-    const chat = approval.actionType === CODING_AGENT_ACTION && { chatRunId: approval.id };
+    const chat = runGate(approval)?.conversational && { chatRunId: approval.id };
     return { badge: "needs-you", detail: { label: approval.label, reason: "approval", ...chat } };
   }
   const running = latest.find((run) => run.status === "running");
@@ -1164,7 +1139,9 @@ function computeBadge(
     };
   }
   const blocked = latest.find(isBlocking);
-  if (blocked) return { badge: "failed", detail: { label: blocked.label } };
+  if (blocked) {
+    return { badge: "failed", detail: { label: blocked.label, ...(blocked.status === "cancelled" && { cancelled: true }) } };
+  }
   const queued = latest.find((run) => run.status === "queued") ?? latest.find((run) => run.status === "waiting");
   if (queued) return { badge: "queued", detail: { label: queued.label } };
   if (unstartedStage) return { badge: "needs-you", detail: { label: unstartedStage, reason: "start" } };
@@ -1186,30 +1163,4 @@ function dedupe(events: InternalEvent[]): InternalEvent[] {
     seen.add(key);
     return true;
   });
-}
-
-const USAGE_COUNTS = ["inputTokens", "cachedInputTokens", "outputTokens", "costUsd"] as const;
-type Usage = Record<string, unknown> | null;
-
-/**
- * A run asked for changes, or parked on a usage limit, goes round again on the same row; each round
- * reports only what it used, so the rounds are added up rather than the last one standing in for all.
- */
-export function addUsage(previous: Usage, round: Usage | undefined): Usage {
-  if (!round) return previous;
-  if (!previous) return round;
-  const total: Record<string, unknown> = { ...previous, ...round };
-  for (const key of USAGE_COUNTS) {
-    const a = previous[key];
-    const b = round[key];
-    if (typeof a === "number" || typeof b === "number") total[key] = (typeof a === "number" ? a : 0) + (typeof b === "number" ? b : 0);
-  }
-  return total;
-}
-
-/** Before a run goes round again: its time so far is kept as `priorMs`, since `startedAt` restarts. */
-function bankRoundTime(run: RunRow): Usage {
-  if (!run.startedAt || !run.endedAt) return run.usage;
-  const prior = typeof run.usage?.priorMs === "number" ? run.usage.priorMs : 0;
-  return { ...(run.usage ?? {}), priorMs: prior + Math.max(0, run.endedAt - run.startedAt) };
 }

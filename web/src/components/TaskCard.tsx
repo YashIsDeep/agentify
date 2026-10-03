@@ -18,7 +18,8 @@ export function TaskCardView({
   return (
     <div className={cls("card", `card-${task.badge}`, selected && "card-selected", overlay && "card-overlay")}>
       <div className="card-top">
-        <StatusBadge badge={task.badge} detail={task.badgeDetail} />
+        {/* Idle says nothing a card without a badge doesn't; the badges left are the ones to act on. */}
+        {task.badge !== "idle" && <StatusBadge badge={task.badge} detail={task.badgeDetail} />}
         {task.enteredStageAt && (
           <span className="card-age" title="Time in this stage">
             {age(task.enteredStageAt, now)}

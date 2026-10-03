@@ -47,6 +47,29 @@ export function SendBackDialog({ run, stageName, onClose }: { run: RunView; stag
   );
 }
 
+/** Stopping a run is one click on a small icon beside its timer, so it asks first. */
+export function CancelRunDialog({ run, onClose }: { run: RunView; onClose: () => void }) {
+  const api = useApi();
+  const action = useTaskAction();
+
+  return (
+    <Dialog title="Cancel action" onClose={onClose} onSubmit={() => action.mutate(() => api.cancelRun(run.id), { onSuccess: onClose })}>
+      <DialogBody lead={run.label}>
+        <ul>
+          <li>Stops it now. The actions after it don't run.</li>
+          <li>Whatever it already changed is kept.</li>
+          <li>Retry starts it again; Skip carries on without it.</li>
+        </ul>
+      </DialogBody>
+      <DialogFooter onCancel={onClose} cancelLabel="Keep running" busy={action.isPending}>
+        <Button type="submit" variant="danger" loading={action.isPending} loadingText="Cancelling…" autoFocus>
+          Cancel action
+        </Button>
+      </DialogFooter>
+    </Dialog>
+  );
+}
+
 export function RetryDialog({ run, onClose }: { run: RunView; onClose: () => void }) {
   const api = useApi();
   const current = { ...run.config, ...(run.overrides ?? {}) } as { agent?: string; model?: string; effort?: string };

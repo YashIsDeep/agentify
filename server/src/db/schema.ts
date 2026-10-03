@@ -1,4 +1,4 @@
-import type { AgentQuestion, RunStatus, TaskLink, TaskStatus } from "@wm/shared";
+import type { AgentQuestion, RunStatus, RunUsage, TaskLink, TaskStatus } from "@wm/shared";
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const json = <T>(name: string) => text(name, { mode: "json" }).$type<T>();
@@ -139,7 +139,7 @@ export const actionRuns = sqliteTable(
     outputs: json<Record<string, unknown>>("outputs"),
     error: text("error"),
     sessionId: text("session_id"),
-    usage: json<Record<string, unknown>>("usage"),
+    usage: json<RunUsage>("usage"),
     /** Set while the agent is blocked on a question, so a reload still shows what it asked. */
     question: json<AgentQuestion>("question"),
     /** Changes you asked for at an approval; the next start of this same run sends them to the agent. */

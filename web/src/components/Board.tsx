@@ -113,7 +113,7 @@ export function Board({
         </header>
         <div className="board-canvas">
           <div className="board" ref={boardRef}>
-            {workflow.stages.map((stage) => (
+            {workflow.stages.map((stage, index) => (
               <Column
                 key={stage.id}
                 stage={stage}
@@ -122,15 +122,11 @@ export function Board({
                 now={now}
                 selectedTaskId={selectedTaskId}
                 onOpenTask={onOpenTask}
+                // Creation stays in the heading; an empty board only needs a quiet word where tasks start.
+                empty={index === 0 && !tasks.isLoading && (tasks.data?.length ?? 0) === 0}
               />
             ))}
           </div>
-          {/* Keep creation in the heading; the empty board only needs a quiet status. */}
-          {!tasks.isLoading && (tasks.data?.length ?? 0) === 0 && (
-            <div className="board-empty">
-              <p className="board-empty-label">No tasks yet</p>
-            </div>
-          )}
         </div>
       </div>
       <DragOverlay dropAnimation={null}>{dragging && <TaskCardView task={dragging} now={now} overlay />}</DragOverlay>
@@ -153,6 +149,7 @@ function Column({
   now,
   selectedTaskId,
   onOpenTask,
+  empty,
 }: {
   stage: StageDef;
   /** The workflow's stages, to name where an approval can send a task back. */
@@ -161,6 +158,8 @@ function Column({
   now: number;
   selectedTaskId: string | null;
   onOpenTask: (id: string) => void;
+  /** The whole board is empty, and this is where new tasks land. */
+  empty: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const overLimit = stage.wipLimit !== null && tasks.length > stage.wipLimit;
@@ -178,6 +177,7 @@ function Column({
         </div>
       </header>
       <div className="column-body">
+        {empty && <p className="column-empty">No tasks yet</p>}
         {tasks.map((task) => (
           <DraggableCard
             key={task.id}

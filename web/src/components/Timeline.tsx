@@ -1,4 +1,4 @@
-import type { RunView, TaskDetail, TimelineEventView, VisitView } from "@wm/shared";
+import { isApprovalOnly, type RunView, type TaskDetail, type TimelineEventView, type VisitView } from "@wm/shared";
 import {
   Archive,
   Ban,
@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { cls, relativeTime } from "../lib/format";
-import { isAgentRun, isApprovalRun } from "../lib/runs";
+import { isAgentRun } from "../lib/runs";
 import { Button, Tag } from "../ui";
 import { RunLog } from "./RunLog";
 
@@ -150,7 +150,7 @@ function EventItem({ event, context }: { event: TimelineEventView; context: Even
   // An agent's transcript is a conversation; flattened into a log it read as one run-on block.
   const run = event.runId !== null ? context.runs.get(event.runId) : undefined;
   // An approval has no output; its events already say what was decided.
-  const canShowLog = event.runId !== null && event.type !== "run.retried" && !(run && isApprovalRun(run));
+  const canShowLog = event.runId !== null && event.type !== "run.retried" && !(run && isApprovalOnly(run));
   const agentRun = run && isAgentRun(run) ? run : undefined;
 
   return (

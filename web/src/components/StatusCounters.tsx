@@ -113,7 +113,7 @@ export function describe(task: TaskSummary): string {
     case "quota":
       return [agentLabel(detail.agent) || detail.label, detail.resetAt && `resets ${clockTime(detail.resetAt)}`].filter(Boolean).join(" ");
     case "failed":
-      return `${detail.label} failed`;
+      return `${detail.label} ${detail.cancelled ? "cancelled" : "failed"}`;
     default:
       return detail.label;
   }

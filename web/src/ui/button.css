@@ -108,6 +108,16 @@
   width: 24px;
   height: 24px;
 }
+@media (pointer: coarse) {
+  .ui-icon-button--md {
+    width: 40px;
+    height: 40px;
+  }
+  .ui-icon-button--sm {
+    width: 32px;
+    height: 32px;
+  }
+}
 .ui-icon-button:hover:not(:disabled),
 .ui-icon-button[aria-expanded="true"] {
   background: var(--surface-3);

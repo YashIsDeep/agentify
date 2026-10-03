@@ -1,5 +1,8 @@
 import { z } from "zod";
+import type { RunStatus, RunUsage } from "./action-list";
 
+export * from "./action-list";
+export * from "./gates";
 export * from "./loops";
 
 // ---------- workspaces ----------
@@ -15,32 +18,6 @@ export const createWorkspaceSchema = z.object({ name: workspaceSchema.shape.name
 export type CreateWorkspaceInput = z.input<typeof createWorkspaceSchema>;
 
 // ---------- enums ----------
-
-/**
- * The action type for a gate that follows no agent — "approve once the merge request is merged".
- * The engine handles it itself: an approval never reaches the runner, it goes straight to
- * `awaiting-approval` and sits there until someone decides. A coding agent whose work you want to
- * sign off doesn't need one of these; it holds its own run open instead.
- */
-export const APPROVAL_ACTION = "approval";
-
-export const CODING_AGENT_ACTION = "coding-agent";
-
-export const RUN_STATUSES = [
-  "waiting", // later in the stage's list; runs once everything above it has finished
-  "queued",
-  "running",
-  "awaiting-approval", // finished, and held open for you: approve, ask for changes, or send it back
-  "quota-wait", // the agent hit its usage limit; requeued by itself at `resumeAt`
-  "succeeded",
-  "failed",
-  "cancelled",
-  "interrupted",
-  "skipped", // failed or cancelled, and you chose to carry on past it
-] as const;
-export type RunStatus = (typeof RUN_STATUSES)[number];
-export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ["waiting", "queued", "running", "awaiting-approval", "quota-wait"];
-export const RETRYABLE_RUN_STATUSES: readonly RunStatus[] = ["failed", "cancelled", "interrupted", "skipped"];
 
 export const TASK_STATUSES = ["active", "archived"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -58,6 +35,8 @@ export interface BadgeDetail {
   /** Quota only: whose limit, and when the run tries again. */
   agent?: AgentId | null;
   resetAt?: number;
+  /** Failed only: you cancelled the action, rather than it failing on its own. */
+  cancelled?: boolean;
 }
 
 // ---------- request schemas ----------
@@ -574,7 +553,7 @@ export interface RunView {
   outputs: Record<string, unknown> | null;
   error: string | null;
   sessionId: string | null;
-  usage: Record<string, unknown> | null;
+  usage: RunUsage | null;
   /** Set while the agent is blocked waiting for an answer. */
   question: AgentQuestion | null;
   /** While `quota-wait`: when the run is queued again. */

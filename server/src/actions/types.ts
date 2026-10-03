@@ -1,4 +1,4 @@
-import type { ActionField, ConnectionType, RunLogLine } from "@wm/shared";
+import type { ActionField, ConnectionType, RunLogLine, RunUsage } from "@wm/shared";
 import type { z } from "zod";
 import type { AgentService } from "../agents/service";
 import type { RunRow, TaskRow } from "../db/schema";
@@ -45,7 +45,7 @@ export interface ActionResult {
   outputs?: Record<string, unknown>;
   summary?: string;
   sessionId?: string | null;
-  usage?: Record<string, unknown> | null;
+  usage?: RunUsage | null;
 }
 
 /** A failure that still carries results worth recording (e.g. an agent session id to resume). */
@@ -86,6 +86,12 @@ export interface ActionDefinition<Config> {
   connectionType?: ConnectionType;
   /** Counts against the concurrent long-running action cap (coding agents). */
   longRunning?: boolean;
+  /**
+   * Set when the config holds something executed as code (a command line). The runner then checks the
+   * config as written, before templates are rendered: afterwards, task text an attacker controls is
+   * indistinguishable from the workflow's own.
+   */
+  validateBeforeRender?: boolean;
   run(ctx: ActionContext<Config>): Promise<ActionResult | void>;
 }
 

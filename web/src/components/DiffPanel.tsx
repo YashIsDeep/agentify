@@ -19,7 +19,8 @@ const STATUS_LETTER: Record<TaskDiffFile["status"], string> = {
 export function DiffPanel({ task }: { task: TaskSummary }) {
   const api = useApi();
   const toast = useToast();
-  const diff = useQuery({ queryKey: ["diff", task.id], queryFn: () => api.taskDiff(task.id) });
+  // A task with no repository has no diff to ask the server for.
+  const diff = useQuery({ queryKey: ["diff", task.id], queryFn: () => api.taskDiff(task.id), enabled: !!task.repoPath && !!task.branch });
   // Only a code task has a diff; the branch arrives with the worktree.
   if (!task.repoPath || !task.branch) return null;
 

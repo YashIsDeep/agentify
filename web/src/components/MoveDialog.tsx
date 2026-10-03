@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import type { StageDef, TaskSummary } from "@wm/shared";
+import { isActiveRun, latestAttempts, type StageDef, type TaskSummary } from "@wm/shared";
 import { ArrowRight } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
-import { entryActionLabels, isActiveRun, latestAttempts } from "../lib/runs";
+import { entryActionLabels } from "../lib/runs";
 import { Button, Callout, Checkbox, Dialog, DialogBody, DialogFooter, Tag } from "../ui";
 
 export function MoveDialog({
@@ -45,12 +45,13 @@ export function MoveDialog({
         {hasActiveRuns && (
           <Callout tone="warn">Actions still running in {from?.name ?? "the current stage"} will be cancelled.</Callout>
         )}
-        <div>
-          <Checkbox checked={runActions} onChange={setRunActions} label="Run its actions" />
-          <p className="muted small move-actions">
-            {entryActions.length > 0 ? `In order: ${entryActions.join(" → ")}.` : `${to.name} has no actions.`}
-          </p>
-        </div>
+        {/* A stage with nothing to run (a Backlog, a Done) has no choice to offer. */}
+        {entryActions.length > 0 && (
+          <div>
+            <Checkbox checked={runActions} onChange={setRunActions} label="Run its actions" />
+            <p className="muted small move-actions">In order: {entryActions.join(" → ")}.</p>
+          </div>
+        )}
       </DialogBody>
       <DialogFooter onCancel={onClose} busy={move.isPending}>
         <Button type="submit" variant="primary" loading={move.isPending} loadingText="Moving…" autoFocus>

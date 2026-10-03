@@ -1,9 +1,9 @@
 import type { AgentQuestion } from "@wm/shared";
-import { MessageCircleQuestion, Send, SkipForward } from "lucide-react";
+import { ListChecks, MessageCircleQuestion, Send, SkipForward } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useApi } from "../api-context";
 import { useTaskAction } from "../hooks";
-import { combineAnswer } from "../lib/questions";
+import { combineAnswer, withRecommended } from "../lib/questions";
 import { Button } from "../ui";
 
 /**
@@ -23,6 +23,7 @@ export function QuestionCard({ question }: { question: AgentQuestion }) {
     question.fields.map((field) => [field.id, combineAnswer(answers[field.id], field.kind === "choice" ? notes[field.id] : undefined)]),
   );
   const answered = question.fields.filter((field) => final[field.id]).length;
+  const unpickedChoices = question.fields.some((field) => field.kind === "choice" && field.options?.length && !answers[field.id]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -84,6 +85,18 @@ export function QuestionCard({ question }: { question: AgentQuestion }) {
         >
           Let it decide
         </Button>
+        {unpickedChoices && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ListChecks}
+            disabled={action.isPending}
+            title="Picks the first option of each question you haven't answered: agents list their recommendation first"
+            onClick={() => setAnswers((current) => withRecommended(question.fields, current))}
+          >
+            Use recommended
+          </Button>
+        )}
         <span className="spacer" />
         <span className="muted small">
           {answered} of {question.fields.length} answered

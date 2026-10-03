@@ -129,8 +129,14 @@ export function EffortSelect({
 
   return (
     <>
-      <select value={value} disabled={disabled || nothing} onChange={(event) => onChange(event.target.value)}>
-        <option value="">{nothing ? ((model ?? "").trim() ? "Not offered by this model" : "Needs a model") : blankLabel}</option>
+      {/* The narrow select cut longer wording off mid-word, so the short label carries a tooltip. */}
+      <select
+        value={value}
+        disabled={disabled || nothing}
+        title={nothing ? ((model ?? "").trim() ? "This model has no effort levels" : "Pick a model to choose an effort level") : undefined}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">{nothing ? ((model ?? "").trim() ? "None" : "Pick model") : blankLabel}</option>
         {options.map((effort) => (
           <option key={effort} value={effort}>
             {effort}

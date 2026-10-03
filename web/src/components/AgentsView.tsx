@@ -144,10 +144,19 @@ function AgentCard({ status }: { status: AgentStatus }) {
           <Button
             size="sm"
             icon={FlaskConical}
-            disabled={!status.installed}
+            // A test can only fail until the CLI is there and logged in; the card says how to fix that.
+            disabled={!status.installed || status.loggedIn === false}
             loading={test.isPending}
             loadingText="Testing…"
-            title={defaultsUnchanged ? "Send a short, read-only prompt with these defaults" : "Tests the saved defaults. Save first to test this choice."}
+            title={
+              !status.installed
+                ? `Install ${status.label} first`
+                : status.loggedIn === false
+                  ? `Log in to ${status.label} first`
+                  : defaultsUnchanged
+                    ? "Send a short, read-only prompt with these defaults"
+                    : "Tests the saved defaults. Save first to test this choice."
+            }
             onClick={() => test.mutate()}
           >
             Test agent

@@ -1,3 +1,5 @@
+import { workedMs } from "@wm/shared";
+
 export const cls = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
 export function relativeTime(at: number, now = Date.now()): string {
@@ -24,7 +26,12 @@ export function age(since: number, now = Date.now()): string {
 
 export function duration(start: number | null, end: number | null, now = Date.now()): string {
   if (!start) return "";
-  const seconds = Math.max(0, Math.round(((end ?? now) - start) / 1000));
+  return elapsed((end ?? now) - start);
+}
+
+/** "45s", "3m 20s", "2h 5m". */
+export function elapsed(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
@@ -48,17 +55,10 @@ export function fileSize(bytes: number): string {
 
 const compact = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value));
 
-/**
- * A run's working time across every round it went through. Asking for changes or waiting out a usage
- * limit sends the same run round again; its earlier rounds are kept as `usage.priorMs`.
- */
-export function runDuration(
-  run: { startedAt: number | null; endedAt: number | null; usage: Record<string, unknown> | null },
-  now = Date.now(),
-): string {
-  if (!run.startedAt) return "";
-  const prior = typeof run.usage?.priorMs === "number" ? run.usage.priorMs : 0;
-  return duration(run.startedAt - prior, run.endedAt, now);
+/** A run's working time across every round it went through. */
+export function runDuration(run: Parameters<typeof workedMs>[0], now = Date.now()): string {
+  const ms = workedMs(run, now);
+  return ms === null ? "" : elapsed(ms);
 }
 
 /** "12.3k in · 450 out · $0.03 est." */

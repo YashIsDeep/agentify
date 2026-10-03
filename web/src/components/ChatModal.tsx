@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { loopPolicy, type RunLogLine, type RunView, type StageDef, type TaskDetail } from "@wm/shared";
+import { canRetry, isActiveRun, loopPolicy, type RunLogLine, type RunView, type StageDef, type TaskDetail } from "@wm/shared";
 import {
   Check,
   ChevronDown,
@@ -22,7 +22,7 @@ import remarkGfm from "remark-gfm";
 import { useApi } from "../api-context";
 import { type ChatItem, toChatItems, transcriptText } from "../lib/chat";
 import { clockTime, cls, relativeTime, runDuration, usageSummary } from "../lib/format";
-import { agentChats, describeAgent, isActiveRun, isAwaitingApproval, isRetryable } from "../lib/runs";
+import { agentChats, describeAgent, isAwaitingApproval } from "../lib/runs";
 import { Button, Dialog, IconButton } from "../ui";
 import { QuestionCard } from "./QuestionCard";
 import { AgentReview } from "./AgentReview";
@@ -104,18 +104,39 @@ export function ChatModal({
 
         <section className="chat-main">
           <header className="chat-header">
-            <RunStatusIcon status={run.status} />
+            {/* A blocked agent is still "running" to the engine, but what it's doing is waiting on you. */}
+            {run.question ? (
+              <MessageCircleQuestion size={14} className="run-icon text-warn" aria-label="Waiting on you" />
+            ) : (
+              <RunStatusIcon status={run.status} />
+            )}
             <div className="chat-header-text">
               <strong>{run.label}</strong>
               <span className="muted small">
                 {describeAgent(run, detail.task, stageDefaults(current.visit.stageId))}
-                {` · ${ranWithAutonomy(run)}`} · {runStatusLabel(run.status)}
+                {` · ${ranWithAutonomy(run)}`} · {run.question ? "Waiting on you" : runStatusLabel(run.status)}
                 {run.resumeAt && ` · resets ${clockTime(run.resumeAt, now)}`}
                 {run.startedAt && ` · ${runDuration(run, now)}`}
                 {usageSummary(run.usage) && ` · ${usageSummary(run.usage)}`}
               </span>
             </div>
             <span className="spacer" />
+            {/* Phones have no room for the chat list beside the transcript, so it becomes a picker. */}
+            {chats.length > 1 && (
+              <select
+                className="chat-switcher"
+                aria-label="Chats in this task"
+                value={run.id}
+                onChange={(event) => onSelect(Number(event.target.value))}
+              >
+                {chats.map(({ run: entry, visit }) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.label} · {visit.stageName}
+                    {entry.question ? " · waiting on you" : ""}
+                  </option>
+                ))}
+              </select>
+            )}
             {!archived && run.status === "quota-wait" && (
               <Button size="sm" icon={Play} onClick={() => onResume(run)} disabled={busy} title="Try again before the reset time">
                 Try now
@@ -126,7 +147,7 @@ export function ChatModal({
                 Cancel
               </Button>
             )}
-            {!archived && isRetryable(run) && (
+            {!archived && canRetry(run) && (
               <Button size="sm" icon={RotateCcw} onClick={() => onRetry(run)} disabled={busy}>
                 Retry
               </Button>
@@ -134,8 +155,9 @@ export function ChatModal({
             <IconButton label="Close chat" icon={X} onClick={onClose} />
           </header>
 
+          {/* Siblings need keys of their own: sharing one left the previous chat's transcript mounted. */}
           <Transcript key={run.id} run={run} now={now} archived={archived} />
-          {!archived && <AgentReview key={run.id} run={run} detail={detail} stages={stages} />}
+          {!archived && <AgentReview key={`review-${run.id}`} run={run} detail={detail} stages={stages} onOpenRun={onSelect} />}
         </section>
     </Dialog>
   );

@@ -62,7 +62,7 @@ Import everything from `web/src/ui` (`import { Button, Field } from "../ui"`).
 | Extra detail | `InfoTip` | Hover, focus or tap. Put it through `Field`'s or `Page`'s `tip`. |
 | A short label on hover | `Tooltip` | Passes props through, so it can be a `Menu`/`Popover` trigger. |
 | Rarely changed settings | `Disclosure` | Native `<details>`. `defaultOpen` when something inside needs attention. |
-| A modal | `Dialog` + `DialogBody` + `DialogFooter` | Open while mounted; `onClose` for Escape, backdrop and ✕. `onSubmit` makes it a form. `DialogBody lead` names what it acts on; a plain `<ul>` inside lists consequences. `DialogFooter`: `start` (a destructive extra), `onCancel`, `busy`. `bare` for custom layouts (the agent chat). |
+| A modal | `Dialog` + `DialogBody` + `DialogFooter` | Open while mounted; `onClose` for Escape, backdrop and ✕. `onSubmit` makes it a form. `DialogBody lead` names what it acts on; a plain `<ul>` inside lists consequences. `DialogFooter`: `start` (a destructive extra), `onCancel`, `cancelLabel` (when the main action is itself a cancel), `busy`. `bare` for custom layouts (the agent chat). |
 | A list of actions | `Menu` | `trigger` is a kit button. Items: `label`, `icon`, `hint`, `active` (ticked), `divided`, `danger`. |
 | A floating panel | `Popover` | For pickers and lists that aren't actions. |
 | Views of one thing | `Tabs` | `keepMounted` keeps a form's edits while you look at another tab. |
