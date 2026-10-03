@@ -166,6 +166,7 @@ describe("the MCP endpoint an agent asks through", () => {
 
     const detail = (await (await h.app.request(`/api/tasks/${taskId}`)).json()) as TaskDetail;
     expect(detail.timeline.map((event) => event.type)).toContain("question.answered");
+    expect(h.questions.answeredForRun(question.runId)).toEqual(["Which port? → 8080"]);
   });
 
   it("records the question and the answer in the run's transcript", async () => {

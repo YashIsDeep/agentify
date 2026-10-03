@@ -29,6 +29,24 @@
       "port": 2813
     },
     {
+      "name": "workflow-manager-e2e-1003",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set WM_DATA_DIR=C:/code/wm-e2e-1003/data&& set WM_PORT=2815&& npm run start -w server"
+      ],
+      "port": 2815
+    },
+    {
+      "name": "workflow-manager-qa",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": [
+        "/c",
+        "set WM_DATA_DIR=C:/code/wm-qa/data&& set WM_PORT=2816&& npm start"
+      ],
+      "port": 2816
+    },
+    {
       "name": "workflow-manager-ux-review",
       "runtimeExecutable": "cmd",
       "runtimeArgs": [

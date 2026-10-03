@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CONTINUE_AFTER_LIMIT } from "../src/agents/loops";
-import { runReview } from "../src/agents/review";
+import { readVerdict, runReview, VERDICT_ONLY } from "../src/agents/review";
 import { limited, loopInput, reply, scriptedTurns } from "./scripted-turns";
 
 const approved = () => reply(JSON.stringify({ decision: "approved", feedback: "" }), "reviewer");
@@ -32,16 +32,57 @@ describe("review loop", () => {
 
   it.each(["Looks fine", '{"decision":"maybe","feedback":""}', '{"decision":"changes_requested","feedback":""}'])
     ("fails closed for an invalid verdict: %s", async (text) => {
-      const final = await runReview(loopInput(scriptedTurns(reply("# Draft"), reply(text))), true);
+      const turns = scriptedTurns(reply("# Draft"), reply(text, "reviewer"), reply(text, "reviewer"));
+      const final = await runReview(loopInput(turns), true);
+      expect(turns.calls[2]).toEqual({ prompt: VERDICT_ONLY, session: "reviewer", role: "reviewer" });
       expect(final.ok).toBe(false);
       expect(final.text).toBe("# Draft");
     });
+
+  it.each([
+    'Everything checks out against the repository.\n\n{"decision":"approved","feedback":""}',
+    '```json\n{"decision":"approved","feedback":""}\n```\nThe document accurately describes the bug.',
+    'The example `{ "rate": 10 }` is fine.\n{"decision":"approved","feedback":"Braces like } in \\"text\\" are fine"}',
+  ])("reads a verdict with prose or a fence around it: %s", async (text) => {
+    const turns = scriptedTurns(reply("# Plan"), reply(text, "reviewer"));
+    const final = await runReview(loopInput(turns), true);
+    expect(turns.calls).toHaveLength(2);
+    expect(final).toMatchObject({ ok: true, text: "# Plan", review: { decision: "approved" } });
+  });
+
+  it("takes the last valid verdict in a reply", () => {
+    expect(readVerdict('Quoted: {"decision":"approved","feedback":""}\nMine:{"decision":"changes_requested","feedback":"Add tests"}'))
+      .toEqual({ decision: "changes_requested", feedback: "Add tests" });
+    expect(readVerdict("No verdict { here")).toBeNull();
+  });
+
+  it("asks the reviewer once more for a readable verdict before failing", async () => {
+    const turns = scriptedTurns(reply("# Plan"), reply("Looks fine to me.", "reviewer"), approved());
+    const final = await runReview(loopInput(turns), true);
+    expect(turns.calls[2]).toEqual({ prompt: VERDICT_ONLY, session: "reviewer", role: "reviewer" });
+    expect(final).toMatchObject({ ok: true, text: "# Plan", sessionId: "author" });
+  });
+
+  it("shows the reviewer and the reviser what you answered the author", async () => {
+    const answered: string[] = [];
+    const turns = scriptedTurns(
+      () => { answered.push("Rate format? → Percent", "Above 100? → Reject"); return reply("# Draft"); },
+      changes(), reply("# Revised"), approved(),
+    );
+    await runReview(loopInput(turns, { answered: () => answered }), true);
+    expect(turns.calls[0]!.prompt).not.toContain("Rate format?");
+    for (const call of turns.calls.slice(1)) {
+      expect(call.prompt).toContain("These are the user's decisions");
+      expect(call.prompt).toContain("Rate format? → Percent\nAbove 100? → Reject");
+    }
+  });
 
   it("lets the code reviewer fix the work and returns its final implementation summary", async () => {
     const turns = scriptedTurns(reply("Initial implementation"), fixed("Fixed and tested"));
     const final = await runReview(loopInput(turns), false);
     expect(turns.calls[1]).toMatchObject({ role: "reviewer", prompt: expect.stringContaining("Fix any issues you find directly") });
-    expect(final).toMatchObject({ text: "Fixed and tested", sessionId: "reviewer", review: { decision: "fixed" } });
+    // The run stays the author's conversation; the reviewer's session is kept beside it.
+    expect(final).toMatchObject({ text: "Fixed and tested", sessionId: "author", review: { decision: "fixed", sessionId: "reviewer" } });
   });
 
   it("does not offer blocked code fixes for approval", async () => {

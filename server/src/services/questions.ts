@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AgentQuestion, AgentQuestionField, RunLogLine } from "@wm/shared";
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { RunLog } from "../actions/types";
 import type { Db } from "../db/client";
 import * as s from "../db/schema";
@@ -15,6 +15,8 @@ export interface AnswerInput {
   answers: Record<string, string>;
   skip: boolean;
 }
+
+const SKIPPED = "Skipped; the agent was told to carry on";
 
 interface Waiter {
   question: AgentQuestion;
@@ -134,13 +136,28 @@ export class QuestionService {
 
     const { question } = waiter;
     const summary = input.skip
-      ? "Skipped; the agent was told to carry on"
+      ? SKIPPED
       : question.fields
           .map((field) => `${field.text} → ${input.answers[field.id]?.trim() || "(no answer)"}`)
           .join("\n");
     this.record(question.runId, { kind: "answer", stream: "info", text: summary });
     this.engine.timeline(question.taskId, this.engine.getRun(question.runId).visitId, question.runId, "question.answered", summary);
     return question.taskId;
+  }
+
+  /**
+   * Everything answered in this run so far, oldest first, one "question → answer" per entry. Read
+   * from the timeline, so it survives a restart and covers every round of the run.
+   */
+  answeredForRun(runId: number): string[] {
+    return this.db
+      .select({ message: s.timelineEvents.message })
+      .from(s.timelineEvents)
+      .where(and(eq(s.timelineEvents.runId, runId), eq(s.timelineEvents.type, "question.answered")))
+      .orderBy(asc(s.timelineEvents.id))
+      .all()
+      .filter((event) => event.message !== SKIPPED)
+      .flatMap((event) => event.message.split("\n"));
   }
 
   /** Unblocks a waiting agent when its run is cancelled or the server is shutting down. */

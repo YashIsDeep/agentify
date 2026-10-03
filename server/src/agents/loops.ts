@@ -37,6 +37,8 @@ export interface LoopInput {
   /** The action's own prompt: what the work is for. */
   instructions: string;
   maxCorrections: number;
+  /** What you have answered the author so far in this run, one "question → answer" per entry. */
+  answered?(): string[];
   saved?: SavedLoop;
   /** Says in the transcript what the loop is doing next. */
   notice(text: string): void;
@@ -45,7 +47,8 @@ export interface LoopInput {
 /** How a loop ended. A run that stops early carries `saved`, so it can go round again from there. */
 export interface LoopOutcome extends Omit<AgentRunResult, "usage"> {
   saved?: SavedLoop;
-  review?: { decision: string; feedback: string };
+  /** `sessionId` is the reviewer's own session, when it is not the one the run carries on in. */
+  review?: { decision: string; feedback: string; sessionId?: string | null };
   ci?: { corrections: number; passed: true };
 }
 

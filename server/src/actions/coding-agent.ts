@@ -267,6 +267,7 @@ export const codingAgentAction: ActionDefinition<Config> = {
         followUp,
         instructions: config.prompt,
         maxCorrections: config.maxCorrections,
+        answered: () => services.questions.answeredForRun(run.id),
         saved,
         notice: (text) => log({ kind: "notice", stream: "info", text }),
       };
