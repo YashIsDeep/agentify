@@ -71,7 +71,7 @@ export class WorkflowService {
 
       const stages = input.copyFromWorkflowId
         ? copyStages(this.engine.getWorkflow(input.copyFromWorkflowId).stages)
-        : [{ id: randomUUID(), name: "Backlog", wipLimit: null, agentDefaults: { ...NO_STAGE_AGENT_DEFAULTS }, bindings: [] }];
+        : [{ id: randomUUID(), name: "Backlog", wipLimit: null, agentDefaults: { ...NO_STAGE_AGENT_DEFAULTS }, stayWhenDone: false, bindings: [] }];
       this.write(id, stages);
       return this.engine.getWorkflow(id);
     })();
@@ -258,7 +258,7 @@ export class WorkflowService {
 
     stages.forEach((stage, position) => {
       const { agent: defaultAgent, model: defaultModel, effort: defaultEffort } = stage.agentDefaults;
-      const set = { name: stage.name, position, wipLimit: stage.wipLimit, defaultAgent, defaultModel, defaultEffort };
+      const set = { name: stage.name, position, wipLimit: stage.wipLimit, defaultAgent, defaultModel, defaultEffort, stayWhenDone: stage.stayWhenDone };
       this.db
         .insert(s.stages)
         .values({ id: stage.id, workflowId, ...set })
@@ -318,6 +318,7 @@ function copyStages(stages: StageDef[]): StageInput[] {
     name: stage.name,
     wipLimit: stage.wipLimit,
     agentDefaults: { ...stage.agentDefaults },
+    stayWhenDone: stage.stayWhenDone,
     bindings: stage.bindings.map((binding) => ({
       id: fresh(binding.id),
       key: binding.key,

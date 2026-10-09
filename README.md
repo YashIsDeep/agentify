@@ -84,19 +84,31 @@ The **Workflows** tab edits a workflow's shape: its stages and their order, and 
 list of actions. A task entering a stage runs its actions top to bottom, one at a time. A coding
 agent can be told to **wait for your approval** when it finishes, so nothing below it runs until you
 approve — or you ask for changes and the same agent picks them up. A standalone **Approval** action
-is for checkpoints that follow no agent, and moving on is just a *Move to stage* action at the end. Edits are a local draft until you press **Save**.
+is for checkpoints that follow no agent, and a task moves to the next stage by itself when a stage's actions finish. Edits are a local draft until you press **Save**.
 
 **Loop modes.** Every coding agent runs in one loop mode, chosen under **Loop** in its settings.
 **Workflows → Add action** also offers each loop as a ready-made preset:
 
 - **Single run:** one agent run with no automatic review. **Autonomy** decides whether it may edit the repository.
-- **Plan loop:** draft → independent review → revise → re-review, read-only. Requested corrections go back to the author, and the revised document is reviewed again. The preset saves the accepted document as `plan.md`.
+- **Plan loop:** draft → independent review → revise → re-review, read-only. Keeps Plan B1 → Plan Review V1 → Plan B2 → Plan Review V2 until the review is clean. The preset also saves the accepted document as `plan.md`.
+- **Build–verify:** the same versioned cycle for requirements, designs, checklists or other documents at any stage. Set the prompt, artifact name and optional verification criteria. Each review checks the matching build; corrections go back to the author.
 - **Implement loop:** implement → independent review → the reviewer fixes the code and runs relevant checks → repeat until accepted.
 - **CI loop:** publish (optional) → check → fix failures → publish → check again. Only a zero exit status from the check command counts as passing.
 
 A loop's review happens whether or not the action waits for your approval; with **Wait for my
-approval** on, only the final work reaches you. Review feedback stays in the transcript and is
-never saved over the document. Invalid reviews or blocked fixes fail the action instead of asking
+approval** on, only the final work reaches you. Plan and Build–verify loops save every completed
+build and review as separate artifacts, visible while the loop runs and retained after archival.
+History is append-only under `.history/<artifact-name>/`: B1, V1, B2, V2, and so on. Numbering
+continues across retries, later stage visits and your revision requests. A quota resume keeps the
+same build/review pair. Invalid reviews are retained too; interrupted turns remain in the transcript
+until they complete. The ordinary artifact (such as `plan.md`) points to the latest accepted result,
+so downstream prompts continue to work. If the artifact name is blank, these document loops still
+keep history under `steps/<action-key>.md` without publishing a current artifact.
+
+Other coding-agent results and Write artifact actions also preserve each saved version. These
+snapshots are documents and summaries, not copies of repository code. Existing artifacts are
+preserved on their first new write; versions overwritten before this feature cannot be recovered.
+Review feedback is never saved over the document. Invalid reviews or blocked fixes fail the action instead of asking
 you to approve unfinished work. Loops default to three correction attempts (configurable from
 1–10); reaching the limit fails the action with the remaining feedback. Quota waits keep the phase
 and attempt count.

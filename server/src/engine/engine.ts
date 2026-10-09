@@ -183,6 +183,7 @@ export class Engine {
         position: stage.position,
         wipLimit: stage.wipLimit,
         agentDefaults: toStageAgentDefaults(stage),
+        stayWhenDone: stage.stayWhenDone,
         bindings: bindingRows
           .filter((binding) => binding.stageId === stage.id)
           .map(({ workflowId: _workflowId, ...binding }) => binding),
@@ -881,7 +882,11 @@ export class Engine {
     this.timeline(task.id, visit.id, null, "stage.exited", `Left ${visit.stageName}`);
   }
 
-  /** Marks the visit complete once every action in its list has settled. */
+  /**
+   * Marks the visit complete once every action in its list has settled, and moves the task on to the
+   * next stage unless this one is set to keep it. A stage with no actions never completes, so a task
+   * waits there until someone moves it.
+   */
   private completeVisitIfDone(visitId: string): void {
     const visit = this.getVisit(visitId);
     if (visit.completedAt) return;
@@ -890,6 +895,13 @@ export class Engine {
     this.db.update(s.stageVisits).set({ completedAt: Date.now() }).where(eq(s.stageVisits.id, visit.id)).run();
     this.timeline(visit.taskId, visit.id, null, "stage.completed", `Completed ${visit.stageName}`);
     this.publish({ type: "task.changed", taskId: visit.taskId });
+
+    // An action may have moved or archived the task itself; then there is nothing left to do here.
+    const task = this.getTask(visit.taskId);
+    if (task.status !== "active" || task.currentVisitId !== visit.id) return;
+    const stage = this.db.select().from(s.stages).where(eq(s.stages.id, visit.stageId)).get();
+    const next = this.nextStageId(task.id, visit.stageId);
+    if (stage && !stage.stayWhenDone && next) this.moveTask(task.id, next, { runActions: true });
   }
 
   private enabledBindings(stageId: string): BindingRow[] {

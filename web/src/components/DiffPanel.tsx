@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useApi } from "../api-context";
 import { diffLineClass, splitPatch } from "../lib/diff";
 import { cls } from "../lib/format";
-import { IconButton, useToast } from "../ui";
+import { Button, IconButton, useToast } from "../ui";
 
 const STATUS_LETTER: Record<TaskDiffFile["status"], string> = {
   added: "A",
@@ -16,7 +16,7 @@ const STATUS_LETTER: Record<TaskDiffFile["status"], string> = {
 };
 
 /** The change a review stage asks about: the files first, each one's hunks when you want them. */
-export function DiffPanel({ task }: { task: TaskSummary }) {
+export function DiffPanel({ task, previewLimit }: { task: TaskSummary; previewLimit?: number }) {
   const api = useApi();
   const toast = useToast();
   // A task with no repository has no diff to ask the server for.
@@ -53,15 +53,18 @@ export function DiffPanel({ task }: { task: TaskSummary }) {
       ) : diff.error ? (
         <p className="error small">{diff.error.message}</p>
       ) : diff.data ? (
-        <DiffFiles diff={diff.data} />
+        <DiffFiles key={task.id} diff={diff.data} previewLimit={previewLimit} />
       ) : null}
     </div>
   );
 }
 
-function DiffFiles({ diff }: { diff: TaskDiff }) {
+function DiffFiles({ diff, previewLimit }: { diff: TaskDiff; previewLimit?: number }) {
   const [openPath, setOpenPath] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const hunks = useMemo(() => splitPatch(diff.patch), [diff.patch]);
+  const limited = previewLimit !== undefined && diff.files.length > previewLimit;
+  const files = limited && !showAll ? diff.files.slice(0, previewLimit) : diff.files;
 
   // The header says "none"; an empty body would only repeat it.
   if (diff.files.length === 0) return null;
@@ -69,7 +72,7 @@ function DiffFiles({ diff }: { diff: TaskDiff }) {
   return (
     <>
       <ul className="diff-files">
-        {diff.files.map((file) => {
+        {files.map((file) => {
           const patch = hunks.get(file.path);
           const open = openPath === file.path;
           return (
@@ -114,6 +117,11 @@ function DiffFiles({ diff }: { diff: TaskDiff }) {
           );
         })}
       </ul>
+      {limited && (
+        <Button variant="link" size="sm" aria-expanded={showAll} onClick={() => setShowAll((value) => !value)}>
+          {showAll ? "Show fewer files" : `Show all ${diff.files.length} files`}
+        </Button>
+      )}
       {diff.truncated && <p className="muted small">Too large to show in full — the rest of it is in {diff.path}.</p>}
       {!diff.uncommitted && (
         <p className="muted small">

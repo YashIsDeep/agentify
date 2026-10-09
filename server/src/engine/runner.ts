@@ -2,6 +2,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { dirname } from "node:path";
 import type { RunLogLine } from "@wm/shared";
 import { z } from "zod";
+import { ensureWorktree, lacksWorktree } from "../actions/ensure-worktree";
 import type { ActionRegistry } from "../actions/registry";
 import { ActionError, type ActionServices, type RunLog, UsageLimitError } from "../actions/types";
 import type { RunRow } from "../db/schema";
@@ -105,6 +106,11 @@ export class Runner {
     try {
       const definition = registry.get(run.actionType);
       if (!definition) throw new Error(`Action type "${run.actionType}" is not available`);
+      // Before the scope is built, so templates and WM_* variables see the worktree.
+      if (definition.worksInWorktree?.(run.config) && lacksWorktree(engine.getTask(run.taskId))) {
+        await ensureWorktree({ task: engine.getTask(run.taskId), services, signal: controller.signal, log: logger.log });
+        if (controller.signal.aborted) return;
+      }
       const scope = engine.buildScope(run);
       const onMiss = (expression: string) => misses.add(expression);
       const rawConfig = { ...run.config, ...(run.overrides ?? {}) };

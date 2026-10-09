@@ -2,11 +2,11 @@ import { type ActionTypeInfo, APPROVAL_ACTION, BINDING_KEY_PATTERN, type Connect
 import type { Draft, DraftBinding, DraftStage } from "../../lib/draft";
 import { allBindings } from "../../lib/draft";
 import { Checkbox, Disclosure, Field, FieldRow, FormStack } from "../../ui";
-import { advancedCustomised, ConfigFields } from "./ConfigFields";
+import { ConfigFields } from "./ConfigFields";
 
 /**
- * One action's settings: what it is and what it does up top, then the switch that includes it in
- * the stage, and everything rarely touched (its key, timeouts, failure handling) folded away.
+ * One action's settings: what it is and what it does up top, and everything rarely touched (its
+ * name, key, timeouts, failure handling) folded away. Switching it off is on its row in the stage.
  */
 export function BindingForm({
   draft,
@@ -54,45 +54,37 @@ export function BindingForm({
 
   return (
     <FormStack>
-      <FieldRow>
-        <Field label="Name" grow>
-          <input value={binding.label} onChange={(event) => onChange({ label: event.target.value })} />
-        </Field>
-        <Field label="Action" grow tip={action?.description}>
-          <select value={binding.actionType} onChange={(event) => changeActionType(event.target.value)}>
-            {actions.map((candidate) => (
-              <option key={candidate.type} value={candidate.type}>
-                {candidate.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </FieldRow>
+      <Field label="Action" tip={action?.description}>
+        <select value={binding.actionType} onChange={(event) => changeActionType(event.target.value)}>
+          {actions.map((candidate) => (
+            <option key={candidate.type} value={candidate.type}>
+              {candidate.label}
+            </option>
+          ))}
+        </select>
+      </Field>
 
       {configProps && <ConfigFields key={binding.id} {...configProps} />}
 
-      <Checkbox
-        checked={binding.enabled}
-        onChange={(enabled) => onChange({ enabled })}
-        label="Enabled"
-        tip={`Switched off, it keeps its settings but is skipped.${action?.connectionType ? " Switching it on needs a connection." : ""}`}
-      />
-
-      <Disclosure
-        summary="Advanced"
-        defaultOpen={keyError !== null || binding.continueOnFailure || (action !== undefined && advancedCustomised(action, binding.config))}
-      >
-        <Field
-          label="Key"
-          error={keyError}
-          tip={
-            <>
-              Later actions read this one's results as <code>{`{{outputs.${key || "key"}.…}}`}</code>.
-            </>
-          }
-        >
-          <input value={binding.key} className="mono" onChange={(event) => onChange({ key: event.target.value })} aria-invalid={keyError !== null} />
-        </Field>
+      {/* Closed unless something in it needs fixing: a seeded action already differs from the defaults here. */}
+      <Disclosure summary="Advanced" defaultOpen={keyError !== null}>
+        <FieldRow>
+          <Field label="Name" grow>
+            <input value={binding.label} onChange={(event) => onChange({ label: event.target.value })} />
+          </Field>
+          <Field
+            label="Key"
+            grow
+            error={keyError}
+            tip={
+              <>
+                Later actions read this one's results as <code>{`{{outputs.${key || "key"}.…}}`}</code>.
+              </>
+            }
+          >
+            <input value={binding.key} className="mono" onChange={(event) => onChange({ key: event.target.value })} aria-invalid={keyError !== null} />
+          </Field>
+        </FieldRow>
         {configProps && <ConfigFields key={`${binding.id}-advanced`} {...configProps} advanced />}
         {binding.actionType !== APPROVAL_ACTION && (
           <Checkbox

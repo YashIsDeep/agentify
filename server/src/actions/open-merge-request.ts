@@ -21,6 +21,7 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
   label: "Open merge request",
   description: "Pushes the task branch and opens a GitLab merge request or GitHub pull request.",
   configSchema,
+  worksInWorktree: () => true,
   fields: [
     { name: "title", label: "Title", kind: "text", default: "{{task.title}}", templated: true },
     { name: "description", label: "Description", kind: "textarea", default: "{{task.description}}", templated: true },
@@ -59,7 +60,7 @@ export const openMergeRequestAction: ActionDefinition<z.output<typeof configSche
     // Without a worktree the task works in the repository's checkout, on whatever branch it has.
     const cwd = task.worktreePath ?? (task.useWorktree ? null : task.repoPath);
     if (!cwd) {
-      throw new Error(task.repoPath ? "Task has no worktree yet; run ensure-worktree first" : "Task has no repository");
+      throw new Error(task.repoPath ? "Task has no worktree" : "Task has no repository");
     }
     const branch = task.branch ?? (await git(["symbolic-ref", "--short", "HEAD"], { cwd, signal }));
     const { baseBranch } = task;

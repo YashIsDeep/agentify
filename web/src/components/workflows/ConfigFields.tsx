@@ -11,12 +11,6 @@ const stringOrNull = (value: unknown) => (typeof value === "string" ? value : nu
 /** Agent, model and effort make one choice together, so they share a row and one explanation. */
 const AGENT_CHOICE = new Set<ActionField["kind"]>(["agent", "model", "effort"]);
 
-/** Whether any of the action's advanced fields holds something other than its default. */
-export const advancedCustomised = (action: ActionTypeInfo, config: Record<string, unknown>) =>
-  action.fields.some(
-    (field) => field.advanced && JSON.stringify(config[field.name] ?? null) !== JSON.stringify(field.default ?? null),
-  );
-
 /**
  * A field can hang off another (an approval's instructions off "Wait for my approval", the CI
  * commands off the CI loop): otherwise it is noise, and its value is kept for when it shows again.

@@ -6,6 +6,7 @@ Every coding-agent action runs in one loop mode, chosen under **Loop** in its se
 
 - single run: one agent run with no automatic review. **Autonomy** (Read-only / Autonomous) decides whether it may edit the repository.
 - plan loop: draft → independent review → revise → re-review, read-only. Corrections go back to the author. The preset saves the accepted document as `plan.md`.
+- Build–verify: the same cycle for any document, with **Verification criteria** in addition to the prompt. Both document loops preserve B1 → Review V1 → B2 → Review V2 in Artifacts. The normal artifact name holds the latest accepted build.
 - implement loop: implement → independent review → the reviewer fixes the code and runs checks → repeat until accepted. The preset prompt reads `{{artifacts["plan.md"]}}`.
 - CI loop: publish (optional) → check → fix failures → publish → check again. Only a zero exit status from **CI check command** counts as passing. It never merges.
 - limits: **Maximum correction attempts** (default 3, range 1–10). Reaching the limit fails the action with the remaining feedback.
@@ -15,7 +16,7 @@ Every coding-agent action runs in one loop mode, chosen under **Loop** in its se
 
 ## How to get to it (user POV)
 
-Go to Workflows, pick a stage, click **Add action**, and choose **Plan loop** / **Implement loop** / **CI loop**. Alternatively, open a coding-agent action's settings and change **Loop**.
+Go to Workflows, pick a stage, click **Add action**, and choose **Plan loop** / **Build–verify** / **Implement loop** / **CI loop**. Alternatively, open a coding-agent action's settings and change **Loop**.
 
 ## Driving it
 
@@ -31,5 +32,6 @@ Go to Workflows, pick a stage, click **Add action**, and choose **Plan loop** / 
 - The reviewer and the reviser are shown what you answered the author's `ask_user` questions in this run ("question → answer"), as the user's decisions.
 - An implement loop's run keeps the **author's** session (`run.sessionId`); the reviewer's is in `run.outputs.review.sessionId`. **Request revision** and **Continue the previous session** resume the author.
 - Quota waits keep the loop's phase and attempt count, so resuming continues where it stopped.
-- The default workflows' Submit MR stage ships a **disabled** CI loop whose placeholder check command exits 1. Configure it before you enable it.
+- Build/review numbering survives quota resumes and continues across revisions and new runs. Invalid reviews and builds from exhausted loops stay visible; they never replace the accepted artifact. A blank artifact name still retains document history under `steps/<action-key>.md`.
+- The default workflows seed no CI loop; add one to Ship in the editor with a real check command.
 - Shell commands (check and publish) can't use `{{…}}` templates. Use `WM_*` env vars.

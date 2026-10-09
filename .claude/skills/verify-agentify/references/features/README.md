@@ -79,7 +79,7 @@ A feature file with no row means the sweep isn't finished. Fix the map in the sa
 - [agent-review](agent-review.md): Review card: request revision, approve and continue, send back, diff, draft persistence.
 - [agent-questions](agent-questions.md): The `ask_user` MCP tool and the question card (answer, Let it decide, Use recommended).
 - [open-conversations](open-conversations.md): The queue page for everything waiting on you.
-- [loop-modes](loop-modes.md): Single run, Plan loop, Implement loop, CI loop.
+- [loop-modes](loop-modes.md): Single run, Plan loop, Build–verify, Implement loop, CI loop.
 - [quota-queue-restart](quota-queue-restart.md): Usage-limit waits, the concurrency queue, runs interrupted by a restart.
 
 ## Configuration

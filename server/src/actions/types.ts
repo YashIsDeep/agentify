@@ -92,6 +92,12 @@ export interface ActionDefinition<Config> {
    * indistinguishable from the workflow's own.
    */
   validateBeforeRender?: boolean;
+  /**
+   * Set when the action works in the task's worktree, given its config as saved. The runner then
+   * creates the worktree first if the task is meant to have one and hasn't, so a stage needs no
+   * “Ensure worktree” above it.
+   */
+  worksInWorktree?: (config: Record<string, unknown>) => boolean;
   run(ctx: ActionContext<Config>): Promise<ActionResult | void>;
 }
 

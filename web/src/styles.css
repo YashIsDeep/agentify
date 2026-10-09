@@ -1544,11 +1544,8 @@ button.counter-stopped[aria-expanded="true"] {
   border-width: 1px 0 0;
   border-radius: 0;
   padding: 12px 20px;
-  max-height: 50%;
-  overflow-y: auto;
 }
 .agent-review textarea { max-height: 120px; min-height: 54px; }
-.agent-review-instructions { max-height: 65px; overflow-y: auto; }
 .agent-review-status {
   display: flex;
   align-items: center;
@@ -1633,11 +1630,14 @@ button.counter-stopped[aria-expanded="true"] {
 }
 
 /* Open conversations: the chat window's two columns, filling the page below its title. */
+.conversations-page {
+  overflow: hidden;
+}
 .convo {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   flex: 1;
-  min-height: 420px;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1730,6 +1730,7 @@ button.counter-stopped[aria-expanded="true"] {
 }
 .chat-header {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 10px;
   padding: 12px 12px 12px 20px;
@@ -1749,16 +1750,32 @@ button.counter-stopped[aria-expanded="true"] {
   font-size: var(--text-lg);
   letter-spacing: -0.01em;
 }
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  /* The transcript pins itself to the newest message; the browser's own anchoring fights that. */
+  overflow-anchor: none;
+}
 .chat-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 20px;
+}
+/* Standalone approvals and notices have no transcript wrapper. */
+.chat-main > .chat-body {
   flex: 1;
   min-height: 0;
-  padding: 20px;
   overflow-y: auto;
-  /* The transcript pins itself to the newest message; the browser's own anchoring fights that. */
-  overflow-anchor: none;
+}
+/* One vertical reading surface for messages, tools, artifacts and the review's changes. */
+.chat-scroll .diff-files,
+.chat-scroll .log,
+.chat-scroll .chat-tool-body pre {
+  max-height: none;
+  overflow-y: visible;
 }
 /* Items keep their own height: a tool row clips its overflow, which lets flex squash it to its border. */
 .chat-body > * {

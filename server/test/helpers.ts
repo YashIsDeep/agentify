@@ -37,7 +37,8 @@ export function createHarness(
       if (!stage) throw new Error(`No stage named ${name}`);
       return stage.id;
     },
-    addWorkflow: (def) => insertWorkflow(ctx.db, def),
+    // Most tests look at the stage an action ran in, so their stages keep the task unless they say otherwise.
+    addWorkflow: (def) => insertWorkflow(ctx.db, { ...def, stages: def.stages.map((stage) => ({ stayWhenDone: true, ...stage })) }),
   };
 }
 

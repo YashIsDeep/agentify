@@ -16,7 +16,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useApi } from "../api-context";
@@ -155,26 +155,34 @@ export function ChatModal({
             <IconButton label="Close chat" icon={X} onClick={onClose} />
           </header>
 
-          {/* Siblings need keys of their own: sharing one left the previous chat's transcript mounted. */}
-          <Transcript key={run.id} run={run} now={now} archived={archived} />
-          {!archived && <AgentReview key={`review-${run.id}`} run={run} detail={detail} stages={stages} onOpenRun={onSelect} />}
+          <Transcript key={run.id} run={run} now={now} archived={archived}>
+            {!archived && <AgentReview run={run} detail={detail} stages={stages} onOpenRun={onSelect} />}
+          </Transcript>
         </section>
     </Dialog>
   );
 }
 
-export function Transcript({ run, now, archived }: { run: RunView; now: number; archived: boolean }) {
+export function Transcript({ run, now, archived, children }: { run: RunView; now: number; archived: boolean; children?: ReactNode }) {
   const api = useApi();
   const log = useQuery({ queryKey: ["runLog", run.id], queryFn: () => api.runLog(run.id), staleTime: 0 });
   const [raw, setRaw] = useState(false);
   const [copied, setCopied] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
   const lines = log.data ?? [];
 
+  // Follow the last message, not the end of a potentially very long review below it.
+  const tailPosition = () => {
+    const element = bodyRef.current;
+    const transcript = transcriptRef.current;
+    if (!element || !transcript) return 0;
+    return Math.max(0, transcript.getBoundingClientRect().bottom - element.getBoundingClientRect().top + element.scrollTop - element.clientHeight);
+  };
   const pin = () => {
     const element = bodyRef.current;
-    if (element && followTail.current) element.scrollTop = element.scrollHeight;
+    if (element && followTail.current) element.scrollTop = tailPosition();
   };
   // A new chat starts at the bottom; an open one only follows if you haven't scrolled away.
   useEffect(() => {
@@ -187,7 +195,7 @@ export function Transcript({ run, now, archived }: { run: RunView; now: number; 
     followTail.current = true;
     pin();
   }, [run.status, run.question?.id]);
-  // The review card below grows and shrinks with the run, which resizes this without a scroll event.
+  // Keep the latest message visible when the viewport changes size.
   useEffect(() => {
     const element = bodyRef.current;
     if (!element) return;
@@ -208,15 +216,19 @@ export function Transcript({ run, now, archived }: { run: RunView; now: number; 
   const lastQuestion = run.question ? items.findLast((item) => item.kind === "question") : undefined;
 
   return (
-    <>
-      <div
-        className="chat-body"
-        ref={bodyRef}
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          followTail.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
-        }}
-      >
+    <div
+      className="chat-scroll"
+      ref={bodyRef}
+      tabIndex={0}
+      role="region"
+      aria-label="Conversation and review"
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        // Reading the review is deliberate too: new output must not pull you back up.
+        followTail.current = Math.abs(tailPosition() - element.scrollTop) < 32;
+      }}
+    >
+      <div className="chat-body" ref={transcriptRef}>
         {log.isLoading && <p className="muted small">Loading the transcript…</p>}
         {log.error && <p className="chat-notice chat-notice-error">Could not load the transcript: {log.error.message}</p>}
         {!log.isLoading && !log.error && lines.length === 0 && (
@@ -261,7 +273,8 @@ export function Transcript({ run, now, archived }: { run: RunView; now: number; 
           {copied ? "Copied" : "Copy"}
         </Button>
       </footer>
-    </>
+      {children}
+    </div>
   );
 }
 

@@ -1,6 +1,4 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { AGENT_IDS, type AgentChoice, type AgentChoiceLayer, type AgentDefaults, type AgentId, type AgentUsage, LOOP_MODE_IDS, LOOP_MODES, loopPolicy, resolveAgentChoice, type RunLogLine } from "@wm/shared";
 import { z } from "zod";
 import { type CiCommands, runCi } from "../agents/ci-loop";
@@ -8,7 +6,8 @@ import { type LoopInput, runSingle, type SavedLoop } from "../agents/loops";
 import { runReview } from "../agents/review";
 import { cliTurns, scratchPrefix } from "../agents/turns";
 import type { TaskRow } from "../db/schema";
-import { resolveInside } from "../paths";
+import { artifactHistory, currentDocumentContext } from "../services/artifact-history";
+import { renderDecisions } from "../agents/decisions";
 import { ActionError, type ActionDefinition, type RunLog, UsageLimitError } from "./types";
 import { artifactName } from "./validation";
 import { invocation } from "./shell";
@@ -25,6 +24,7 @@ const configSchema = z.object({
   prompt: z.string().min(1),
   loopMode: z.enum(LOOP_MODE_IDS).default("single"),
   maxCorrections: z.number().int().min(1).max(10).default(3),
+  verificationInstructions: z.string().default(""),
   ciCheckCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
   ciPublishCommand: z.string().refine((value) => !value.includes("{{"), "CI commands cannot contain template expressions; use WM_* environment variables").default(""),
   ciShell: z.enum(["default", "cmd", "powershell", "bash", "sh"]).default("default"),
@@ -32,22 +32,30 @@ const configSchema = z.object({
   autonomy: z.enum(["read-only", "autonomous"]).default("read-only"),
   /** Hold the run open when the agent finishes: nothing below it runs until you approve. */
   requireApproval: z.boolean().default(false),
+  /** No longer offered in the editor: blank shows the standard line for the loop mode. */
   approvalInstructions: z.string().default(""),
   /** A stage id in the same workflow; empty offers no Send back at the approval. */
   sendBackTo: z.string().default(""),
-  /** Resume this action's previous session for the task when the agent is unchanged. */
-  continueSession: z.boolean().default(false),
+  /**
+   * Resume this action's previous session for the task when the agent is unchanged. No longer offered
+   * in the editor: only workflows saved with it off start fresh.
+   */
+  continueSession: z.boolean().default(true),
   /** Artifact name to write the agent's final message to. Blank skips the write. */
   saveResultAs: z.union([z.literal(""), artifactName("Save result as")]).default(""),
   inactivityTimeoutSec: z.number().positive().default(300),
   timeoutSec: z.number().positive().optional(),
-}).refine((config) => config.loopMode !== "ci" || !!config.ciCheckCommand.trim(), "CI loop requires a check command");
+}).refine((config) => config.loopMode !== "ci" || !!config.ciCheckCommand.trim(), "CI loop requires a check command")
+  .refine((config) => !["plan", "build-verify", "implementation"].includes(config.loopMode)
+    || config.saveResultAs.replace(/\\/g, "/").split("/").filter((part) => part && part !== ".").join("/").toLowerCase() !== "decisions.md",
+  "decisions.md is reserved for the final decision record; choose a different result artifact name");
 type Config = z.output<typeof configSchema>;
 
 /** Largest final message kept in outputs (the artifact always gets the full text). */
 const MAX_RESULT_IN_OUTPUTS = 50_000;
 
-const LOOPS = { field: "loopMode", in: ["plan", "implementation", "ci"] } as const;
+const LOOPS = { field: "loopMode", in: ["plan", "build-verify", "implementation", "ci"] } as const;
+const DOCUMENT_LOOPS = { field: "loopMode", in: ["plan", "build-verify"] } as const;
 const CI = { field: "loopMode", in: ["ci"] } as const;
 const AWAITING_APPROVAL = { field: "requireApproval", in: [true] } as const;
 
@@ -70,13 +78,16 @@ export const codingAgentAction: ActionDefinition<Config> = {
   configSchema,
   longRunning: true,
   validateBeforeRender: true,
+  worksInWorktree: () => true,
   fields: [
     {
       name: "loopMode", label: "Loop", kind: "select", default: "single",
       options: LOOP_MODES.map((mode) => ({ value: mode.id, label: mode.label })),
       help: LOOP_MODES.map((mode) => `${mode.label}: ${mode.hint}`).join(" "),
     },
-    { name: "maxCorrections", label: "Maximum correction attempts", kind: "number", default: 3, shownWhen: LOOPS, help: "Stops with a failure and the remaining feedback when the limit is reached (1–10)." },
+    { name: "maxCorrections", label: "Maximum correction attempts", kind: "number", default: 3, shownWhen: LOOPS, advanced: true, help: "Stops with a failure and the remaining feedback when the limit is reached (1–10)." },
+    { name: "verificationInstructions", label: "Verification criteria", kind: "textarea", default: "", templated: true, shownWhen: DOCUMENT_LOOPS, advanced: true,
+      placeholder: "What must be true for this document to pass review?", help: "The independent reviewer checks these criteria as well as the task instructions. Each build and review is kept in Artifacts." },
     { name: "ciCheckCommand", label: "CI check command", kind: "textarea", default: "", shownWhen: CI, placeholder: "npm test", help: "Run local checks, remote checks, or a script combining both. It must wait for checks on the current commit and exit 0 only when all pass. Use WM_* environment variables, not templates." },
     { name: "ciPublishCommand", label: "CI publish command", kind: "textarea", default: "", shownWhen: CI, advanced: true, help: "Optional: runs before each check, including the first, to commit and push changes needed by remote CI. Leave blank for local checks or an already-published branch. Must be safe to repeat." },
     { name: "ciShell", label: "CI command shell", kind: "select", default: "default", shownWhen: CI, advanced: true, options: [
@@ -103,12 +114,14 @@ export const codingAgentAction: ActionDefinition<Config> = {
       label: "Model",
       kind: "model",
       default: "",
+      advanced: true,
     },
     {
       name: "effort",
       label: "Reasoning effort",
       kind: "effort",
       default: "",
+      advanced: true,
     },
     {
       name: "autonomy",
@@ -131,39 +144,23 @@ export const codingAgentAction: ActionDefinition<Config> = {
       help: "Approve the final result and ask for revisions. Nothing after it runs until then.",
     },
     {
-      name: "approvalInstructions",
-      label: "Approval instructions",
-      kind: "textarea",
-      default: "",
-      templated: true,
-      shownWhen: AWAITING_APPROVAL,
-      placeholder: "Read requirements.md, then approve.",
-      help: "Shown on the task while it waits for you.",
-    },
-    {
       name: "sendBackTo",
       label: "Send back to",
       kind: "stage",
       default: "",
       shownWhen: AWAITING_APPROVAL,
+      advanced: true,
       noneLabel: "No Send back button",
       help: "Adds a Send back button next to Approve, for work that belongs at an earlier stage.",
-    },
-    {
-      name: "continueSession",
-      label: "Continue the previous session",
-      kind: "boolean",
-      default: false,
-      advanced: true,
-      help: "Resumes this action's last session for the task, if the agent is unchanged.",
     },
     {
       name: "saveResultAs",
       label: "Save result as artifact",
       kind: "text",
       default: "",
+      advanced: true,
       placeholder: "requirements.md",
-      help: "Writes the agent's final message to this artifact. Leave blank to skip.",
+      help: "Writes the accepted result here, preserving previous versions. Reviewed loops also save decisions.md. Plan and Build–verify keep every build and review even when this is blank.",
     },
     {
       name: "inactivityTimeoutSec",
@@ -202,20 +199,20 @@ export const codingAgentAction: ActionDefinition<Config> = {
     }
     const cli = services.agents.resolve(agent);
     const cwd = [task.worktreePath, task.repoPath, artifactDir].find((dir): dir is string => !!dir && existsSync(dir))!;
-    // `ensure-worktree` treats "no repository" as nothing to do, so without this an autonomous
+    // Creating the worktree treats "no repository" as nothing to do, so without this an autonomous
     // agent would quietly start editing the artifacts folder instead of the codebase.
     if (autonomy === "autonomous" && cwd === artifactDir) {
       throw new Error("This task has no repository, so there is nothing for an autonomous agent to work on. Set one in the task's Details.");
     }
-    // `ensure-worktree` is an action like any other, so a stage can easily be built without one above
-    // this agent, and the run then falls back to the repository's own checkout on whatever branch it
+    // The runner creates the worktree before this runs, so this only happens when the worktree was
+    // removed underneath the run. The fallback is the repository's own checkout on whatever branch it
     // happens to have — which is not what a task whose Details say "Use a worktree" asked for. Editing
     // it is a refusal; merely reading it is harmless, but surprising enough to say out loud below.
     const strayFromWorktree = cwd === task.repoPath && task.useWorktree;
     if (autonomy === "autonomous" && strayFromWorktree) {
       throw new Error(
         `This task is set to use a worktree but hasn't got one, so an autonomous agent would edit the repository's own checkout at ${cwd}, ` +
-          `on whatever branch it is currently on. Add an “Ensure worktree” action to an earlier stage in this workflow, ` +
+          `on whatever branch it is currently on. Retry to create the worktree again, ` +
           `or turn off “Use a worktree” in the task's Details if editing the checkout directly is what you want.`,
       );
     }
@@ -254,19 +251,43 @@ export const codingAgentAction: ActionDefinition<Config> = {
         // note rather than a failure — but the path above is the checkout the whole team works in,
         // and seeing why it is there beats wondering whether the worktree silently went missing.
         ...(strayFromWorktree
-          ? ["That is the repository's own checkout: this task is set to use a worktree, but no “Ensure worktree” action has run above this one. Read-only, so nothing there is edited."]
+          ? ["That is the repository's own checkout: this task is set to use a worktree, but it is missing. Read-only, so nothing there is edited."]
           : []),
       ],
       runId: run.id,
       questions: services.questions,
     });
     try {
+      const historyName = saveResultAs || `steps/${encodeURIComponent(run.bindingKey)}.md`;
+      const history = artifactHistory(artifactDir, historyName);
       const input: LoopInput = {
         turns,
         opening,
         followUp,
         instructions: config.prompt,
         maxCorrections: config.maxCorrections,
+        verificationInstructions: config.verificationInstructions,
+        loopLabel: policy.label,
+        ...(policy.review ? { decisionContext: () => [
+          `Build and review history for ${historyName}:\n${history.context()}`,
+          currentDocumentContext(artifactDir, historyName),
+          "User decisions and revision requests across this task:\n" + services.engine.getTaskDetail(task.id).timeline
+            .filter((event) => ["question.answered", "run.changes-requested", "feedback"].includes(event.type))
+            .map((event) => event.message).join("\n"),
+        ].join("\n\n") } : {}),
+        ...(policy.review === "document" ? { history: {
+          build: (text: string) => {
+            const version = history.build(withoutPreamble(text));
+            log({ kind: "notice", stream: "info", text: `Saved build B${version} in Artifacts` });
+            services.engine.publish({ type: "task.changed", taskId: task.id });
+            return version;
+          },
+          verify: (version, verification) => {
+            history.verify(version, verification);
+            log({ kind: "notice", stream: "info", text: `Saved review V${version}: ${verification.decision}` });
+            services.engine.publish({ type: "task.changed", taskId: task.id });
+          },
+        } } : {}),
         answered: () => services.questions.answeredForRun(run.id),
         saved,
         notice: (text) => log({ kind: "notice", stream: "info", text }),
@@ -299,19 +320,34 @@ export const codingAgentAction: ActionDefinition<Config> = {
         throw new UsageLimitError(result.error ?? "Usage limit reached", resetAt, details);
       }
       if (!result.ok) throw new ActionError(result.error ?? "The agent failed", details);
+      if (policy.review && !result.decisions) throw new ActionError("The final review did not include a decision record", details);
 
       if (result.review || result.ci) {
         log({ kind: "notice", stream: "info", text: config.requireApproval ? "Final work ready for your approval" : "Loop completed" });
         log({ kind: "message", stream: "stdout", text: result.text });
       }
 
+      let buildVersion = result.buildVersion;
       if (saveResultAs) {
         if (!result.text.trim()) throw new ActionError("The agent finished without a final message to save", details);
-        const file = resolveInside(artifactDir, saveResultAs);
-        await mkdir(dirname(file), { recursive: true });
-        await writeFile(file, withoutPreamble(result.text), "utf8");
+        const text = withoutPreamble(result.text);
+        if (policy.review !== "document") buildVersion = history.build(text);
+        history.publish(text);
         outputs.artifact = saveResultAs;
         log(`Saved the final message to ${saveResultAs}`);
+      }
+      if (result.decisions) {
+        const source = [`Task: ${task.title}`, `Final step: ${run.label} (run ${run.id})`,
+          ...(buildVersion ? [`Final build: ${history.reference("B", buildVersion)}`,
+            ...(policy.review === "document" ? [`Final review: ${history.reference("V", buildVersion)}`] : [])]
+            : ["Final build: the implementation and accepted summary in this run"]),
+        ].join("\n\n");
+        const decisions = renderDecisions(result.decisions, source);
+        const decisionHistory = artifactHistory(artifactDir, "decisions.md");
+        outputs.decisionsVersion = decisionHistory.build(decisions);
+        decisionHistory.publish(decisions);
+        outputs.decisionsArtifact = "decisions.md";
+        log({ kind: "notice", stream: "info", text: "Saved decisions.md with the final choices and alternatives for your review" });
       }
       return { ...details, summary: usageSummary(turns.usage) };
     } finally {
@@ -327,7 +363,7 @@ const logNote = (log: RunLog, note: Note) => (typeof note === "string" ? log(not
 /**
  * How the author's first turn starts, when the run has no saved progress. Changes you asked for at
  * this run's own approval are the prompt, in the session it just used, so one run stays one
- * conversation; "Continue the previous session" resumes this action's last session on the task.
+ * conversation; otherwise the run resumes this action's last session on the task.
  * Either way, a different agent can't resume another's session, so it gets the earlier result as context.
  */
 export function openingTurn(options: {

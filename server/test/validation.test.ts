@@ -116,6 +116,6 @@ describe("repository validation", () => {
     expect(h.repos.list()).toEqual([]);
     h.engine.createTask({ workflowId: feature!.id, title: "One", repoPath: "C:\\code\\gone" });
     h.engine.createTask({ workflowId: feature!.id, title: "Two", repoPath: "C:\\code\\gone" });
-    expect(h.repos.list()).toEqual([{ path: "C:\\code\\gone", exists: false }]);
+    expect(h.repos.list()).toEqual([{ path: "C:\\code\\gone", exists: false, baseBranch: null }]);
   });
 });

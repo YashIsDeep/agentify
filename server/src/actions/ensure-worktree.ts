@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { git, gitSucceeds, slugify } from "../lib/git";
 import { assertNoSymlinks } from "../paths";
-import type { ActionDefinition, RunLog } from "./types";
+import type { TaskRow } from "../db/schema";
+import type { ActionDefinition, ActionServices, RunLog } from "./types";
 
 const configSchema = z.object({
   branchPrefix: z.string().default("wm/"),
@@ -29,51 +30,73 @@ export const ensureWorktreeAction: ActionDefinition<z.output<typeof configSchema
       help: "Gitignored paths to bring into the worktree, comma- or newline-separated. Files are copied; directories are linked, so installing in the worktree also changes the repository's copy.",
     },
   ],
-  async run({ config, task, services, signal, log }) {
-    if (!task.repoPath) {
-      log("Task has no repository; nothing to do");
-      return { outputs: { skipped: true }, summary: "no repository" };
-    }
-    const repo = task.repoPath;
-    if (!task.useWorktree && !task.worktreePath) {
-      log(`Task works in the repository checkout at ${repo}; no worktree needed`);
-      return { outputs: { skipped: true }, summary: "worktree turned off" };
-    }
-    if (task.worktreePath && task.branch && task.baseBranch && existsSync(task.worktreePath)) {
-      log(`Worktree already exists at ${task.worktreePath}`);
-      // Still worth a pass: the list may have grown since the worktree was made, and anything
-      // already there is left alone.
-      await carryOver(repo, task.worktreePath, config.carryOver, log);
-      return { outputs: { branch: task.branch, baseBranch: task.baseBranch, worktreePath: task.worktreePath } };
-    }
-
-    const onLine = (text: string, stream: "stdout" | "stderr") => log(text, stream);
-    await git(["rev-parse", "--is-inside-work-tree"], { cwd: repo, signal });
-    const baseBranch = task.baseBranch ?? (await git(["symbolic-ref", "--short", "HEAD"], { cwd: repo, signal }));
-    const name = `${slugify(task.title)}-${task.id.slice(0, 8)}`;
-    const branch = task.branch ?? `${config.branchPrefix}${name}`;
-    const worktreePath = join(services.paths.worktreesDir, name);
-
-    if (existsSync(worktreePath)) {
-      const checkedOut = await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, signal });
-      if (checkedOut !== branch) {
-        throw new Error(`${worktreePath} already exists with ${checkedOut} checked out (expected ${branch})`);
-      }
-      log(`Reusing existing worktree at ${worktreePath}`);
-    } else {
-      const branchExists = await gitSucceeds(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo);
-      const args = branchExists
-        ? ["worktree", "add", worktreePath, branch]
-        : ["worktree", "add", "-b", branch, worktreePath, baseBranch];
-      log(`$ git ${args.join(" ")}`);
-      await git(args, { cwd: repo, signal, onLine });
-    }
-
-    await carryOver(repo, worktreePath, config.carryOver, log);
-    services.engine.setTaskGitInfo(task.id, { branch, baseBranch, worktreePath });
-    return { outputs: { branch, baseBranch, worktreePath }, summary: `worktree on ${branch}` };
-  },
+  run: ({ config, task, services, signal, log }) => ensureWorktree({ task, services, signal, log }, config),
 };
+
+/** What a worktree gets when an action creates it on demand, with no “Ensure worktree” above it. */
+export const WORKTREE_DEFAULTS: WorktreeOptions = { branchPrefix: "wm/", carryOver: ".env" };
+
+/** Whether the task is set to work in a worktree it hasn't got (or has lost). */
+export const lacksWorktree = (task: TaskRow): boolean =>
+  !!task.repoPath && task.useWorktree && !(task.worktreePath && task.branch && task.baseBranch && existsSync(task.worktreePath));
+
+type WorktreeOptions = z.output<typeof configSchema>;
+
+interface WorktreeContext {
+  task: TaskRow;
+  services: Pick<ActionServices, "engine" | "paths">;
+  signal: AbortSignal;
+  log: RunLog;
+}
+
+/**
+ * Creates the task's worktree and branch, or does nothing when it has one. The “Ensure worktree”
+ * action and the runner (for an action that works in the worktree) both come here.
+ */
+export async function ensureWorktree({ task, services, signal, log }: WorktreeContext, config: WorktreeOptions = WORKTREE_DEFAULTS) {
+  if (!task.repoPath) {
+    log("Task has no repository; nothing to do");
+    return { outputs: { skipped: true }, summary: "no repository" };
+  }
+  const repo = task.repoPath;
+  if (!task.useWorktree && !task.worktreePath) {
+    log(`Task works in the repository checkout at ${repo}; no worktree needed`);
+    return { outputs: { skipped: true }, summary: "worktree turned off" };
+  }
+  if (task.worktreePath && task.branch && task.baseBranch && existsSync(task.worktreePath)) {
+    log(`Worktree already exists at ${task.worktreePath}`);
+    // Still worth a pass: the list may have grown since the worktree was made, and anything
+    // already there is left alone.
+    await carryOver(repo, task.worktreePath, config.carryOver, log);
+    return { outputs: { branch: task.branch, baseBranch: task.baseBranch, worktreePath: task.worktreePath } };
+  }
+
+  const onLine = (text: string, stream: "stdout" | "stderr") => log(text, stream);
+  await git(["rev-parse", "--is-inside-work-tree"], { cwd: repo, signal });
+  const baseBranch = task.baseBranch ?? (await git(["symbolic-ref", "--short", "HEAD"], { cwd: repo, signal }));
+  const name = `${slugify(task.title)}-${task.id.slice(0, 8)}`;
+  const branch = task.branch ?? `${config.branchPrefix}${name}`;
+  const worktreePath = join(services.paths.worktreesDir, name);
+
+  if (existsSync(worktreePath)) {
+    const checkedOut = await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, signal });
+    if (checkedOut !== branch) {
+      throw new Error(`${worktreePath} already exists with ${checkedOut} checked out (expected ${branch})`);
+    }
+    log(`Reusing existing worktree at ${worktreePath}`);
+  } else {
+    const branchExists = await gitSucceeds(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo);
+    const args = branchExists
+      ? ["worktree", "add", worktreePath, branch]
+      : ["worktree", "add", "-b", branch, worktreePath, baseBranch];
+    log(`$ git ${args.join(" ")}`);
+    await git(args, { cwd: repo, signal, onLine });
+  }
+
+  await carryOver(repo, worktreePath, config.carryOver, log);
+  services.engine.setTaskGitInfo(task.id, { branch, baseBranch, worktreePath });
+  return { outputs: { branch, baseBranch, worktreePath }, summary: `worktree on ${branch}` };
+}
 
 /**
  * A worktree is a clean checkout, so everything git ignores stays behind: the task starts without

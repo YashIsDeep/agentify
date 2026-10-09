@@ -20,15 +20,8 @@ describe("default workflows", () => {
   it("seeds only Feature and Bugfix, with consistent references", () => {
     const workflows = h.engine.listWorkflows();
     expect(workflows.map((w) => w.name)).toEqual(["Feature", "Bugfix"]);
-    expect(workflows[0]!.stages.map((st) => st.name)).toEqual([
-      "Backlog",
-      "To Pick",
-      "Solidify Reqs",
-      "Implement Reqs",
-      "Review Imp",
-      "Test Imp",
-      "Submit MR",
-    ]);
+    expect(workflows[0]!.stages.map((st) => st.name)).toEqual(["Backlog", "Plan", "Build", "Ship"]);
+    expect(workflows[1]!.stages.map((st) => st.name)).toEqual(["Backlog", "Investigate", "Fix", "Ship"]);
 
     for (const workflow of workflows) {
       const stageIds = new Set(workflow.stages.map((st) => st.id));
@@ -47,33 +40,20 @@ describe("default workflows", () => {
     }
   });
 
-  it("never lets an unconfigured test command pass quietly", () => {
-    const feature = h.engine.listWorkflows()[0]!;
-    const runTests = feature.stages.find((st) => st.name === "Test Imp")!.bindings.find((b) => b.key === "runTests")!;
-    expect(runTests.enabled).toBe(false);
-    expect(runTests.config.command as string).toMatch(/exit 1$/);
-
-    // No seeded shell command means anything until you have edited it, so none may ship switched
-    // on; and one that only echoes has to exit non-zero, or switching it on would sign a task off
-    // as tested when nothing ran.
+  it("seeds nothing that needs setting up first: every action is switched on and none is boilerplate", () => {
     for (const workflow of h.engine.listWorkflows()) {
-      for (const stage of workflow.stages) {
-        for (const binding of stage.bindings.filter((b) => b.actionType === "shell")) {
-          const command = binding.config.command as string;
-          expect(binding.enabled, `${workflow.name}/${binding.key} is on before anyone has edited it`).toBe(false);
-          if (/^echo\b/.test(command)) {
-            expect(command, `${workflow.name}/${binding.key} echoes a placeholder and then succeeds`).toMatch(/exit 1$/);
-          }
-        }
-      }
+      const bindings = workflow.stages.flatMap((stage) => stage.bindings);
+      expect(bindings.every((binding) => binding.enabled), `${workflow.name} seeds a switched-off action`).toBe(true);
+      // A worktree is made on demand and a finished stage moves on by itself.
+      expect(bindings.map((binding) => binding.actionType)).toEqual([
+        "coding-agent",
+        "coding-agent",
+        "open-merge-request",
+        "approval",
+        "archive-task",
+      ]);
+      expect(workflow.stages.some((stage) => stage.stayWhenDone)).toBe(false);
     }
-  });
-
-  it("puts the install step above the test command, both switched off", () => {
-    const testImp = h.engine.listWorkflows()[0]!.stages.find((st) => st.name === "Test Imp")!;
-    const keys = testImp.bindings.map((b) => b.key);
-    expect(keys.indexOf("installDeps")).toBeLessThan(keys.indexOf("runTests"));
-    expect(testImp.bindings.find((b) => b.key === "installDeps")!.enabled).toBe(false);
   });
 
   it("does not seed twice", () => {
@@ -81,20 +61,27 @@ describe("default workflows", () => {
     expect(h.engine.listWorkflows()).toHaveLength(2);
   });
 
-  it("drafts requirements.md with the Feature workflow's coding agent", async () => {
+  it("drafts requirements.md, waits for your sign-off, then moves the task on to Build", async () => {
     h.agents.setPathOverride("claude", fileURLToPath(new URL("./fixtures/fake-claude.mjs", import.meta.url)));
     const q = inspect(h);
     const feature = h.engine.listWorkflows()[0]!;
     const task = h.engine.createTask({ workflowId: feature.id, title: "Try it" });
-    h.engine.moveTask(task.id, h.stageId(feature.id, "Solidify Reqs"));
+    // Backlog has no actions, so the task waits there until it is moved.
+    expect(q.stageName(task.id)).toBe("Backlog");
+    h.engine.moveTask(task.id, h.stageId(feature.id, "Plan"));
 
     // The agent signs its own work off, so the draft run is what waits for you.
-    await waitFor(() => q.latest(task.id, "draftRequirements")?.status === "awaiting-approval");
-    expect(q.latest(task.id, "draftRequirements")?.outputs?.instructions).toContain("requirements.md");
-    expect(q.runs(task.id, "solidifyWorktree")[0]?.status).toBe("succeeded");
+    const waiting = await waitFor(() =>
+      q.latest(task.id, "draftRequirements")?.status === "awaiting-approval" ? q.latest(task.id, "draftRequirements") : undefined,
+    );
+    expect(waiting.outputs?.instructions).toBe("Read requirements.md under Artifacts. Request changes and the agent redrafts it.");
     const requirements = readFileSync(join(h.paths.artifactDir(task.id), "requirements.md"), "utf8");
     expect(requirements).toContain("claude fresh | model:default | access:read-only");
     expect(requirements).toContain("Task: Try it");
     expect(q.detail(task.id).task.badge).toBe("needs-you");
+
+    h.engine.approveRun(waiting.id);
+    expect(q.stageName(task.id)).toBe("Build");
+    expect(q.latest(task.id, "implement")).toBeDefined();
   });
 });

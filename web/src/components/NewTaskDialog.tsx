@@ -1,10 +1,10 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isTicketLinkType, type TicketDraft, type WorkflowDef } from "@wm/shared";
 import { Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useApi } from "../api-context";
 import { cleanLinks, hasIssueKey, type LinkDraft } from "../lib/links";
-import { Button, Callout, Dialog, DialogBody, DialogFooter, Field, FieldRow, FormStack, useToast } from "../ui";
+import { Button, Callout, Dialog, DialogBody, DialogFooter, Disclosure, Field, FormStack, useToast } from "../ui";
 import { LinksField } from "./LinksField";
 import { RepoFields, WorktreeCheck } from "./RepoFields";
 
@@ -29,6 +29,18 @@ export function NewTaskDialog({
     baseBranch: "",
     useWorktree: true,
   });
+  // The next task usually goes where the last one did, so the form starts on that repository and
+  // base branch. Same query as the repository picker below, most recently used first.
+  const repos = useQuery({ queryKey: ["repos"], queryFn: api.repos, staleTime: 30_000 });
+  const lastRepo = repos.data?.find((repo) => repo.exists);
+  const [prefilled, setPrefilled] = useState({ repoPath: "", baseBranch: "" });
+  const repoTouched = useRef(false);
+  useEffect(() => {
+    if (!lastRepo || repoTouched.current) return;
+    const prefill = { repoPath: lastRepo.path, baseBranch: lastRepo.baseBranch ?? "" };
+    setPrefilled(prefill);
+    setForm((current) => ({ ...current, ...prefill }));
+  }, [lastRepo?.path]);
   // One empty row up front, so there's somewhere to paste the ticket straight away.
   const [links, setLinks] = useState<LinkDraft[]>([{ type: "", value: "" }]);
 
@@ -111,8 +123,8 @@ export function NewTaskDialog({
   const dirty =
     form.title.trim() !== "" ||
     form.description.trim() !== "" ||
-    form.repoPath.trim() !== "" ||
-    form.baseBranch.trim() !== "" ||
+    form.repoPath.trim() !== prefilled.repoPath ||
+    form.baseBranch.trim() !== prefilled.baseBranch ||
     form.stageId !== "" ||
     form.workflowId !== defaultWorkflowId ||
     links.some((link) => link.value.trim() !== "");
@@ -171,16 +183,25 @@ export function NewTaskDialog({
           )}
           {ticket && draftNote && <Callout tone={draftNote.tone}>{draftNote.text}</Callout>}
         </FormStack>
-        <FieldRow>
-          <Field label="Workflow">
-            <select value={form.workflowId} onChange={set("workflowId")}>
-              {workflows.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+        <Field label="Workflow">
+          <select value={form.workflowId} onChange={set("workflowId")}>
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <RepoFields
+          repoPath={form.repoPath}
+          baseBranch={form.baseBranch}
+          optional
+          onChange={(patch) => {
+            repoTouched.current = true;
+            setForm((current) => ({ ...current, ...patch }));
+          }}
+        />
+        <Disclosure summary="More" defaultOpen={form.stageId !== "" || !form.useWorktree}>
           <Field label="Start in">
             <select value={form.stageId} onChange={set("stageId")}>
               {workflow?.stages.map((stage, index) => (
@@ -190,19 +211,13 @@ export function NewTaskDialog({
               ))}
             </select>
           </Field>
-        </FieldRow>
-        <RepoFields
-          repoPath={form.repoPath}
-          baseBranch={form.baseBranch}
-          optional
-          onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
-        />
-        {form.repoPath.trim() !== "" && (
-          <WorktreeCheck
-            checked={form.useWorktree}
-            onChange={(useWorktree) => setForm((current) => ({ ...current, useWorktree }))}
-          />
-        )}
+          {form.repoPath.trim() !== "" && (
+            <WorktreeCheck
+              checked={form.useWorktree}
+              onChange={(useWorktree) => setForm((current) => ({ ...current, useWorktree }))}
+            />
+          )}
+        </Disclosure>
       </DialogBody>
       <DialogFooter onCancel={requestClose} busy={create.isPending}>
         <Button type="submit" variant="primary" disabled={!form.title.trim()} loading={create.isPending} loadingText="Creating…">

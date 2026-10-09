@@ -11,6 +11,7 @@ The drawer's **Activity** and **Artifacts** tabs: what happened to the task, and
 - artifacts: a file list (name, size), with the first file selected and previewed. Markdown is rendered (links open in a new tab), and other files show as preformatted text. The header shows "updated <relative>".
 - empty: "No artifacts yet". Actions write files like `requirements.md` here, and artifacts are kept after the task is archived.
 - review artifacts: the same files appear as an **Artifacts** list inside review cards, and each opens in an xl dialog.
+- version history: current files appear first, followed by each document's B1, Review V1, B2, Review V2 in numeric order. Click a version to read it; hover its name for the stored path. Plan and Build–verify loops add versions live. Other saved results and Write artifact actions retain build snapshots too.
 
 ## How to get to it (user POV)
 
@@ -27,3 +28,4 @@ Open a task and pick a tab below the description. Activity is the default tab.
 - Artifact content refetches when `modifiedAt` changes, so a rewrite by a later action shows up live.
 - After archiving, transcripts and logs are gone ("Transcripts are removed when a task is archived."), but the timeline and artifacts remain.
 - Artifact paths are sandboxed: symlinks and paths outside the task's directory are refused.
+- Versions are append-only under `.history/<artifact-name>/` and survive archival. An existing file is preserved before its first new build; history already overwritten before versioning cannot be recovered.

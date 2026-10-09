@@ -4,6 +4,7 @@ import type { RunStatus, RunUsage } from "./action-list";
 export * from "./action-list";
 export * from "./gates";
 export * from "./loops";
+export * from "./artifacts";
 
 // ---------- workspaces ----------
 
@@ -90,6 +91,8 @@ export interface RepoInfo {
   path: string;
   /** False when the folder has since been moved or deleted. */
   exists: boolean;
+  /** The base branch of the latest task that used it, for starting the next one the same way. */
+  baseBranch: string | null;
 }
 
 export const listTasksQuerySchema = z.object({
@@ -426,6 +429,8 @@ export const stageInputSchema = z.object({
   name: z.string().trim().min(1),
   wipLimit: z.number().int().positive().nullable().default(null),
   agentDefaults: stageAgentDefaultsSchema.default({ agent: null, model: null, effort: null }),
+  /** Off: a task moves to the next stage once this stage's actions have all finished. */
+  stayWhenDone: z.boolean().default(false),
   bindings: z.array(bindingInputSchema).default([]),
 });
 
@@ -471,6 +476,8 @@ export interface StageDef {
   position: number;
   wipLimit: number | null;
   agentDefaults: StageAgentDefaults;
+  /** Off: a task moves to the next stage once this stage's actions have all finished. */
+  stayWhenDone: boolean;
   /** Run top to bottom when a task enters the stage. */
   bindings: BindingDef[];
 }

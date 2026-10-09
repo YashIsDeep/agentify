@@ -7,12 +7,13 @@ import remarkGfm from "remark-gfm";
 import { useApi } from "../api-context";
 import { cls, fileSize, relativeTime } from "../lib/format";
 import { Dialog, DialogBody, EmptyState } from "../ui";
+import { artifactLabel, sortedArtifacts } from "../lib/artifacts";
 
 export function ArtifactsPanel({ taskId }: { taskId: string }) {
   const api = useApi();
   const list = useQuery({ queryKey: ["artifacts", taskId], queryFn: () => api.artifacts(taskId) });
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const files = list.data ?? [];
+  const files = sortedArtifacts(list.data ?? []);
   const selected = files.find((file) => file.name === selectedName) ?? files[0];
 
   if (list.isLoading) return <p className="muted small panel-pad">Loading artifacts…</p>;
@@ -34,9 +35,10 @@ export function ArtifactsPanel({ taskId }: { taskId: string }) {
               type="button"
               className={cls("artifact-item", file.name === selected?.name && "artifact-item-active")}
               onClick={() => setSelectedName(file.name)}
+              title={file.name}
             >
               <FileText size={14} />
-              <span className="artifact-name">{file.name}</span>
+              <span className="artifact-name">{artifactLabel(file)}</span>
               <span className="muted small">{fileSize(file.size)}</span>
             </button>
           </li>
@@ -45,7 +47,7 @@ export function ArtifactsPanel({ taskId }: { taskId: string }) {
       {selected && (
         <div className="artifact-preview">
           <div className="artifact-preview-header">
-            <strong>{selected.name}</strong>
+            <strong title={selected.name}>{artifactLabel(selected)}</strong>
             <span className="muted small">updated {relativeTime(selected.modifiedAt)}</span>
           </div>
           <ArtifactContent taskId={taskId} file={selected} />
@@ -63,7 +65,7 @@ export function ReviewArtifacts({ taskId }: { taskId: string }) {
   const api = useApi();
   const list = useQuery({ queryKey: ["artifacts", taskId], queryFn: () => api.artifacts(taskId) });
   const [openName, setOpenName] = useState<string | null>(null);
-  const files = list.data ?? [];
+  const files = sortedArtifacts(list.data ?? []);
   const open = files.find((file) => file.name === openName);
   if (files.length === 0) return null;
 
@@ -81,14 +83,14 @@ export function ReviewArtifacts({ taskId }: { taskId: string }) {
           <li key={file.name}>
             <button type="button" className="diff-file" aria-haspopup="dialog" onClick={() => setOpenName(file.name)}>
               <FileText size={13} />
-              <span className="diff-path">{file.name}</span>
+              <span className="diff-path" title={file.name}>{artifactLabel(file)}</span>
               <span className="muted small">{relativeTime(file.modifiedAt)}</span>
             </button>
           </li>
         ))}
       </ul>
       {open && (
-        <Dialog title={open.name} size="xl" onClose={() => setOpenName(null)}>
+        <Dialog title={artifactLabel(open)} size="xl" onClose={() => setOpenName(null)}>
           <DialogBody>
             <ArtifactContent taskId={taskId} file={open} />
           </DialogBody>

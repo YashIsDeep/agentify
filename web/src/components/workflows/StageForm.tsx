@@ -1,7 +1,7 @@
 import type { AgentId, StageAgentDefaults } from "@wm/shared";
 import { AGENTS } from "../../lib/agents";
 import type { DraftStage } from "../../lib/draft";
-import { Field, FieldRow, FormStack } from "../../ui";
+import { Checkbox, Field, FieldRow, FormStack } from "../../ui";
 import { EffortSelect, keepEffort, ModelSelect, modelsFor, useAgentModels } from "../ModelSelect";
 
 export function StageForm({
@@ -39,6 +39,13 @@ export function StageForm({
           />
         </Field>
       </FieldRow>
+
+      <Checkbox
+        checked={stage.stayWhenDone}
+        onChange={(stayWhenDone) => onChange({ stayWhenDone })}
+        label="Stay here when done"
+        tip="Off, a task moves to the next stage once this stage's actions have all finished."
+      />
 
       <Field
         label="Coding agent defaults"

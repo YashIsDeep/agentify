@@ -15,6 +15,7 @@ const workflow = (): WorkflowDef => ({
       position: 0,
       wipLimit: null,
       agentDefaults: { agent: null, model: null, effort: null },
+      stayWhenDone: false,
       bindings: [
         {
           id: "b1",
@@ -46,6 +47,7 @@ const workflow = (): WorkflowDef => ({
       position: 1,
       wipLimit: null,
       agentDefaults: { agent: null, model: null, effort: null },
+      stayWhenDone: false,
       bindings: [
         {
           id: "b3",

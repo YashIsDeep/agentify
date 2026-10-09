@@ -1,5 +1,5 @@
 import { type ActionTypeInfo, APPROVAL_ACTION, CODING_AGENT_ACTION, LOOP_MODES, loopPolicy } from "@wm/shared";
-import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Hand, Plus, Settings2, Terminal, Trash2, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Hand, Plus, Power, PowerOff, Settings2, Terminal, Trash2, Zap } from "lucide-react";
 import { agentLabel } from "../../lib/agents";
 import type { ActionPreset, Draft, DraftStage } from "../../lib/draft";
 import { cls, countOf } from "../../lib/format";
@@ -19,6 +19,7 @@ export function StageColumn({
   onDelete,
   onAddBinding,
   onMoveBinding,
+  onToggleBinding,
   selected,
 }: {
   draft: Draft;
@@ -34,6 +35,7 @@ export function StageColumn({
   onDelete: () => void;
   onAddBinding: (action: ActionTypeInfo, preset?: ActionPreset) => void;
   onMoveBinding: (index: number, delta: number) => void;
+  onToggleBinding: (bindingId: string, enabled: boolean) => void;
 }) {
   const label = (type: string) => actions.find((action) => action.type === type)?.label ?? type;
   // A coding agent in a loop says which; a single run is just a coding agent.
@@ -76,7 +78,7 @@ export function StageColumn({
           {[agentLabel(stage.agentDefaults.agent), stage.agentDefaults.model, stage.agentDefaults.effort].filter(Boolean).join(" · ")}
         </div>
       )}
-      <div className="wf-action-heading"><h4>Actions <Tag>{stage.bindings.length}</Tag><InfoTip>Run top to bottom, one at a time, when a task enters this stage.</InfoTip></h4><AddAction actions={actions} onAdd={onAddBinding} /></div>
+      <div className="wf-action-heading"><h4>Actions <Tag>{stage.bindings.length}</Tag><InfoTip>{`Run top to bottom, one at a time, when a task enters this stage. ${stage.stayWhenDone ? "The task then stays here." : "The task then moves to the next stage."}`}</InfoTip></h4><AddAction actions={actions} onAdd={onAddBinding} /></div>
       <div className="wf-sequence">
         <ol className="wf-bindings">
           {stage.bindings.map((binding, position) => (
@@ -99,6 +101,12 @@ export function StageColumn({
                 <ChevronRight size={15} />
               </button>
               <span className="wf-binding-move">
+                <IconButton
+                  label={binding.enabled ? `Switch ${binding.label} off` : `Switch ${binding.label} on`}
+                  icon={binding.enabled ? Power : PowerOff}
+                  size="sm"
+                  onClick={() => onToggleBinding(binding.id, !binding.enabled)}
+                />
                 <IconButton label={`Move ${binding.label} up`} icon={ChevronUp} size="sm" disabled={position === 0} onClick={() => onMoveBinding(position, -1)} />
                 <IconButton
                   label={`Move ${binding.label} down`}

@@ -18,7 +18,7 @@ export class RepoService {
   /** Distinct repo paths across tasks, most recently used first. */
   list(): RepoInfo[] {
     const rows = this.db
-      .select({ path: s.tasks.repoPath, updatedAt: s.tasks.updatedAt })
+      .select({ path: s.tasks.repoPath, baseBranch: s.tasks.baseBranch, updatedAt: s.tasks.updatedAt })
       .from(s.tasks)
       .orderBy(desc(s.tasks.updatedAt))
       .all();
@@ -26,7 +26,7 @@ export class RepoService {
     const seen = new Map<string, RepoInfo>();
     for (const row of rows) {
       if (!row.path || seen.has(row.path)) continue;
-      seen.set(row.path, { path: row.path, exists: existsSync(row.path) });
+      seen.set(row.path, { path: row.path, exists: existsSync(row.path), baseBranch: row.baseBranch });
     }
     return [...seen.values()];
   }

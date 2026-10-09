@@ -130,8 +130,8 @@ describe("editing a workflow", () => {
       input.stages = [second!, first!, ...rest];
     });
 
-    expect(saved.stages.map((stage) => stage.name)).toEqual(["To Pick", "Inbox", "Solidify Reqs", "Implement Reqs", "Review Imp", "Test Imp", "Submit MR", "Done"]);
-    expect(saved.stages.map((stage) => stage.position)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(saved.stages.map((stage) => stage.name)).toEqual(["Plan", "Inbox", "Build", "Ship", "Done"]);
+    expect(saved.stages.map((stage) => stage.position)).toEqual([0, 1, 2, 3, 4]);
     expect(saved.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
 
@@ -227,7 +227,7 @@ describe("refusing edits that would strand tasks or actions", () => {
   it("rejects a move-stage target or Send back stage that is not in the workflow", async () => {
     await expect(
       save(feature(), (input) => {
-        allBindings(input).find((binding) => binding.actionType === "move-stage")!.config = { target: randomUUID() };
+        input.stages[1]!.bindings!.push({ id: randomUUID(), key: "jump", label: "Jump", actionType: "move-stage", config: { target: randomUUID() } });
       }),
     ).rejects.toThrow(/destination stage is not part of this workflow/);
     await expect(
@@ -259,8 +259,17 @@ describe("refusing edits that would strand tasks or actions", () => {
   });
 
   it("lets an integration action sit unconfigured while it is switched off", async () => {
-    // The seeded Jira bindings ship disabled; saving them untouched must not need a connection.
-    await expect(save(feature(), () => {})).resolves.toBeDefined();
+    // A switched-off Jira action can be saved without a connection.
+    await save(feature(), (input) => {
+      input.stages[1]!.bindings!.push({
+        id: randomUUID(),
+        key: "jiraInProgress",
+        label: "Jira → In Progress",
+        actionType: "jira-transition",
+        config: { connectionId: "", issue: "{{task.links.jira}}", transition: "In Progress", comment: "" },
+        enabled: false,
+      });
+    });
 
     const enable = (input: SaveWorkflowInput, connectionId: string) => {
       const binding = allBindings(input).find((b) => b.actionType === "jira-transition")!;

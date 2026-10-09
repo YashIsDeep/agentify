@@ -21,6 +21,7 @@ export interface DraftStage {
   name: string;
   wipLimit: number | null;
   agentDefaults: StageAgentDefaults;
+  stayWhenDone: boolean;
   /** In the order they run. */
   bindings: DraftBinding[];
 }
@@ -46,6 +47,7 @@ export function toDraft(workflow: WorkflowDef): Draft {
       name: stage.name,
       wipLimit: stage.wipLimit,
       agentDefaults: { ...stage.agentDefaults },
+      stayWhenDone: stage.stayWhenDone,
       bindings: stage.bindings.map((binding) => ({
         id: binding.id,
         key: binding.key,
@@ -91,6 +93,7 @@ export function addStage(draft: Draft, at = draft.stages.length): { draft: Draft
     name: uniqueName(draft.stages.map((s) => s.name), "New stage"),
     wipLimit: null,
     agentDefaults: { ...NO_STAGE_AGENT_DEFAULTS },
+    stayWhenDone: false,
     bindings: [],
   };
   const stages = [...draft.stages];

@@ -4,7 +4,7 @@
  */
 import type { Autonomy } from "./index";
 
-export const LOOP_MODE_IDS = ["single", "plan", "implementation", "ci"] as const;
+export const LOOP_MODE_IDS = ["single", "plan", "build-verify", "implementation", "ci"] as const;
 export type LoopMode = (typeof LOOP_MODE_IDS)[number];
 
 export const isLoopMode = (value: unknown): value is LoopMode => LOOP_MODE_IDS.includes(value as LoopMode);
@@ -35,11 +35,21 @@ export const LOOP_MODES: readonly LoopModeInfo[] = [
   {
     id: "plan",
     label: "Plan loop",
-    hint: "Draft, review and revise until the plan is accepted.",
+    hint: "Build and verify a plan, keeping every version and review until accepted.",
     preset: loopPreset(
       "plan",
       "Plan {{task.title}}.\n\n{{task.description}}\n\nExplore the repository and return only the complete Markdown plan.",
       "plan.md",
+    ),
+  },
+  {
+    id: "build-verify",
+    label: "Build–verify",
+    hint: "Create any document, independently review it and revise until clean. Keeps every build and review.",
+    preset: loopPreset(
+      "build-verify",
+      "Create a document for {{task.title}}.\n\n{{task.description}}\n\nReturn only the complete document. Address the task's requirements and acceptance criteria.",
+      "document.md",
     ),
   },
   {
@@ -81,6 +91,7 @@ export function loopPolicy(config: { loopMode?: unknown; autonomy?: unknown }): 
     case "single":
       return { mode, label, autonomy: config.autonomy === "autonomous" ? "autonomous" : "read-only", review: null, asksQuestions: true };
     case "plan":
+    case "build-verify":
       return { mode, label, autonomy: "read-only", review: "document", asksQuestions: true };
     case "implementation":
       return { mode, label, autonomy: "autonomous", review: "code", asksQuestions: true };

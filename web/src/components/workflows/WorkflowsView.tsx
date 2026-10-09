@@ -305,6 +305,7 @@ function WorkflowEditor({
                 setSelection({ kind: "binding", bindingId: next.bindingId });
               }}
               onMoveBinding={(position, delta) => edit(moveBinding(draft, activeStage.id, position, delta))}
+              onToggleBinding={(bindingId, enabled) => edit(updateBinding(draft, bindingId, { enabled }))}
             />
           )}
         </div>

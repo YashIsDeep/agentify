@@ -67,6 +67,29 @@ describe("worktrees", () => {
     expect(existsSync(h.paths.runsDir(task.id))).toBe(false);
   });
 
+  it("makes the worktree itself for an action that works in it, with no Ensure worktree above", async () => {
+    const q = inspect(h);
+    const workflowId = h.addWorkflow({
+      name: "Bare",
+      description: "",
+      stages: [{ name: "Work", bindings: [{ key: "where", label: "Where", actionType: "shell", config: { command: "git rev-parse --abbrev-ref HEAD" } }] }],
+    });
+    const task = h.engine.createTask({ workflowId, title: "On demand", repoPath: repo });
+    await waitFor(() => q.visitDone(task.id));
+
+    const ready = h.engine.getTask(task.id);
+    expect(ready.branch).toMatch(/^wm\/on-demand-[0-9a-f]{8}$/);
+    expect(existsSync(join(ready.worktreePath!, "README.md"))).toBe(true);
+    // The command ran in the new worktree, on the task's branch.
+    const log = readFileSync(h.paths.runLog(task.id, q.latest(task.id, "where")!.id), "utf8");
+    expect(log).toContain(ready.branch!);
+
+    // A task that works in the checkout itself gets none.
+    const inPlace = h.engine.createTask({ workflowId, title: "In place", repoPath: repo, useWorktree: false });
+    await waitFor(() => q.visitDone(inPlace.id));
+    expect(h.engine.getTask(inPlace.id).worktreePath).toBeNull();
+  });
+
   it("refuses to remove a dirty worktree unless forced", async () => {
     const q = inspect(h);
     const task = h.engine.createTask({ workflowId: codeWorkflow(), title: "Dirty", repoPath: repo });

@@ -33,7 +33,7 @@ export function convertLoopModes(sqlite: Sqlite, log: (message: string) => void 
     sqlite
       .prepare(
         `SELECT * FROM ${table} WHERE action_type = ? AND (
-          coalesce(json_extract(config, '$.loopMode'), '') NOT IN ('single', 'plan', 'implementation', 'ci')
+          coalesce(json_extract(config, '$.loopMode'), '') NOT IN ('single', 'plan', 'build-verify', 'implementation', 'ci')
           OR json_type(config, '$.reviewBeforeApproval') IS NOT NULL
           ${Object.keys(LOOP_FIELDS).map((field) => `OR json_type(config, '$.${field}') IS NULL`).join(" ")}
           ${extra})`,
@@ -54,7 +54,7 @@ export function convertLoopModes(sqlite: Sqlite, log: (message: string) => void 
 
     const updateRun = sqlite.prepare("UPDATE action_runs SET config = ?, overrides = ? WHERE id = ?");
     const overridesPending = `OR json_type(overrides, '$.reviewBeforeApproval') IS NOT NULL
-      OR (json_type(overrides, '$.loopMode') IS NOT NULL AND json_extract(overrides, '$.loopMode') NOT IN ('single', 'plan', 'implementation', 'ci'))`;
+      OR (json_type(overrides, '$.loopMode') IS NOT NULL AND json_extract(overrides, '$.loopMode') NOT IN ('single', 'plan', 'build-verify', 'implementation', 'ci'))`;
     for (const row of pending("action_runs", overridesPending)) {
       const original = JSON.parse(row.config) as Config;
       const overrides = row.overrides ? (JSON.parse(row.overrides) as Config) : null;

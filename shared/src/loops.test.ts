@@ -9,6 +9,7 @@ describe("loop policy", () => {
 
   it("decides each loop's autonomy and review whatever the config says", () => {
     expect(loopPolicy({ loopMode: "plan", autonomy: "autonomous" })).toMatchObject({ autonomy: "read-only", review: "document", asksQuestions: true });
+    expect(loopPolicy({ loopMode: "build-verify", autonomy: "autonomous" })).toMatchObject({ autonomy: "read-only", review: "document", asksQuestions: true });
     expect(loopPolicy({ loopMode: "implementation", autonomy: "read-only" })).toMatchObject({ autonomy: "autonomous", review: "code", asksQuestions: true });
     expect(loopPolicy({ loopMode: "ci", autonomy: "read-only" })).toMatchObject({ autonomy: "autonomous", review: null, asksQuestions: false });
   });

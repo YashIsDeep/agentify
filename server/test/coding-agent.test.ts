@@ -97,6 +97,8 @@ describe("coding-agent action", () => {
     const run = q.latest(task.id, "agent");
     expect(run?.outputs).toMatchObject({ review: { decision: "revised" }, result: expect.stringContaining("# Revised plan"), autonomy: "read-only" });
     expect(artifact(task.id, "plan.md")).toBeUndefined();
+    expect(artifact(task.id, ".history/steps/agent.md/B1.md")).toContain("codex fresh");
+    expect(artifact(task.id, ".history/steps/agent.md/V2.md")).toContain("Result: Clean");
   });
 
   it("automatically corrects a rejected plan before exposing its approval", async () => {
@@ -107,6 +109,22 @@ describe("coding-agent action", () => {
     expect(waiting.outputs).toMatchObject({ review: { decision: "revised", feedback: "Add acceptance criteria" }, result: expect.stringContaining("# Revised plan") });
     expect(q.runs(task.id, "agent")).toHaveLength(1);
     expect(q.detail(task.id).timeline.filter((event) => event.type === "approval.waiting")).toHaveLength(1);
+    expect(artifact(task.id, ".history/result.md/B1.md")).toContain("codex fresh");
+    expect(artifact(task.id, ".history/result.md/V1.md")).toContain("Add acceptance criteria");
+    expect(artifact(task.id, ".history/result.md/B2.md")).toBe(artifact(task.id, "result.md"));
+    expect(artifact(task.id, ".history/result.md/V2.md")).toContain("Result: Clean");
+  });
+
+  it("runs reusable build–verify actions and exposes the history through the artifact API", async () => {
+    const workflowId = agentWorkflow({ loopMode: "build-verify", saveResultAs: "requirements.md", prompt: "Requirements [review:changes]", verificationInstructions: "Check acceptance criteria" });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await waitFor(() => q.visitDone(task.id));
+    expect(q.latest(task.id, "agent")?.status).toBe("succeeded");
+    const response = await h.app.request(`/api/tasks/${task.id}/artifacts`);
+    const names = ((await response.json()) as { name: string }[]).map((file) => file.name);
+    expect(names).toEqual([".history/requirements.md/B1.md", ".history/requirements.md/B2.md", ".history/requirements.md/V1.md", ".history/requirements.md/V2.md", "requirements.md"]);
+    const original = await h.app.request(`/api/tasks/${task.id}/artifact?name=${encodeURIComponent(names[0]!)}`);
+    expect(await original.text()).toContain("codex fresh");
   });
 
   it("fails an invalid review without saving it over the document or offering approval", async () => {
@@ -114,6 +132,8 @@ describe("coding-agent action", () => {
     const task = h.engine.createTask({ workflowId, title: "Widget" });
     await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
     expect(artifact(task.id, "result.md")).toBeUndefined();
+    expect(artifact(task.id, ".history/result.md/B1.md")).toContain("codex fresh");
+    expect(artifact(task.id, ".history/result.md/V1.md")).toContain("Result: Invalid review");
     expect(q.detail(task.id).timeline.some((event) => event.type === "approval.waiting")).toBe(false);
   });
 
@@ -172,33 +192,14 @@ describe("coding-agent action", () => {
     expect(log[0]?.text).toMatch(/^x{20000}\n\n\[Truncated: the prompt was 25000 characters and only the first 20000 are kept here\.\]$/);
   });
 
-  it("refuses to turn an autonomous agent loose on the repository's checkout when the task wants a worktree", async () => {
-    // Nothing above the agent ensures a worktree, so the run would land in the checkout itself while
-    // the task's Details still say to use one.
+  it("fails before the agent starts when the task's worktree cannot be made", async () => {
+    // The data directory is no git repository, so there is nothing to branch from.
     const workflowId = agentWorkflow({ autonomy: "autonomous" });
     const task = h.engine.createTask({ workflowId, title: "Widget", repoPath: h.dataDir });
     await waitFor(() => q.latest(task.id, "agent")?.status === "failed");
-    expect(q.latest(task.id, "agent")?.error).toContain("Add an “Ensure worktree” action to an earlier stage");
+    expect(q.latest(task.id, "agent")?.error).toContain("git rev-parse");
     // It never got as far as the agent, so nothing ran and nothing was written.
     expect(artifact(task.id, "result.md")).toBeUndefined();
-  });
-
-  it("notes a read-only run that works in the repository's checkout, and keeps quiet when that was the plan", async () => {
-    const logOf = async (taskId: string) => {
-      const run = q.latest(taskId, "agent")!;
-      expect(run.status).toBe("succeeded");
-      const lines = (await (await h.app.request(`/api/runs/${run.id}/log`)).json()) as RunLogLine[];
-      return lines.map((line) => line.text).join("\n");
-    };
-    const workflowId = agentWorkflow({});
-    const stray = h.engine.createTask({ workflowId, title: "Stray", repoPath: h.dataDir });
-    await waitFor(() => q.visitDone(stray.id));
-    // Harmless — it only reads — but the transcript says why it is there rather than in a worktree.
-    expect(await logOf(stray.id)).toContain("no “Ensure worktree” action has run above this one");
-
-    const deliberate = h.engine.createTask({ workflowId, title: "Deliberate", repoPath: h.dataDir, useWorktree: false });
-    await waitFor(() => q.visitDone(deliberate.id));
-    expect(await logOf(deliberate.id)).not.toContain("Ensure worktree");
   });
 
   it("continues the previous session, and hands over context when the agent changes", async () => {
@@ -349,6 +350,9 @@ describe("coding-agent action", () => {
     });
     expect(revised).toContain("codex resumed codex-thread-1");
     expect(revised).toContain("prompt:Use fewer words");
+    expect(artifact(task.id, ".history/result.md/B1.md")).toContain("codex fresh");
+    expect(artifact(task.id, ".history/result.md/B2.md")).toBe(revised);
+    expect(artifact(task.id, ".history/result.md/V2.md")).toContain("Result: Clean");
     // The note went to this agent; later stages must not read it as feedback on their own work.
     expect(q.detail(task.id).task.lastFeedback).toBeNull();
     expect(q.runs(task.id, "agent")).toHaveLength(1);
@@ -371,6 +375,8 @@ describe("coding-agent action", () => {
     await waitFor(() => q.latest(task.id, "agent")?.status === "awaiting-approval");
     expect(artifact(task.id, "result.md")).toContain("codex resumed codex-thread-1");
     expect(artifact(task.id, "result.md")).toContain("prompt:Now add a concrete example");
+    expect(artifact(task.id, ".history/result.md/B3.md")).toBe(artifact(task.id, "result.md"));
+    expect(artifact(task.id, ".history/result.md/B1.md")).toContain("codex fresh");
     expect(q.runs(task.id, "agent")).toHaveLength(1);
     expect(q.latest(task.id, "afterApproval")?.status).toBe("waiting");
     expect(artifact(task.id, "approved.md")).toBeUndefined();

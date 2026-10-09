@@ -21,6 +21,7 @@ export interface SeedStage {
   name: string;
   wipLimit?: number;
   agentDefaults?: { agent?: AgentId; model?: string; effort?: string };
+  stayWhenDone?: boolean;
   bindings?: SeedBinding[];
 }
 
@@ -57,6 +58,7 @@ export function insertWorkflow(db: Db, def: SeedWorkflow, createdAt = Date.now()
         defaultAgent: stage.agentDefaults?.agent ?? null,
         defaultModel: stage.agentDefaults?.model ?? null,
         defaultEffort: stage.agentDefaults?.effort ?? null,
+        stayWhenDone: stage.stayWhenDone ?? false,
       })
       .run();
     for (const binding of stage.bindings ?? []) {
@@ -112,51 +114,14 @@ export function seedDefaultWorkflows(db: Db, sqlite: Sqlite): boolean {
 
 // ---------------------------------------------------------------- default workflows
 
-/** A coding agent as the editor would add it in this loop mode, with the seed's own prompt and gate. */
-const codingAgent = ({
-  mode,
-  approval,
-  sendBackTo,
-  ...config
-}: {
-  mode: LoopMode;
-  prompt: string;
-  continueSession?: boolean;
-  saveResultAs?: string;
-  ciCheckCommand?: string;
-  /** Present: the agent waits for your sign-off when it finishes, showing this while it waits. */
-  approval?: string;
-  /** Offers a Send back to this stage beside Approve; changes go to the agent, not a stage. */
-  sendBackTo?: string;
-}) => ({
+/** A coding agent as the editor would add it in this loop mode, with the seed's own prompt, waiting for your sign-off. */
+const codingAgent = ({ mode, ...config }: { mode: LoopMode; prompt: string; saveResultAs?: string }) => ({
   ...defaultConfig(codingAgentAction),
   ...LOOP_MODES.find((info) => info.id === mode)!.preset,
   agent: "claude",
   saveResultAs: "",
-  requireApproval: approval !== undefined,
-  approvalInstructions: approval ?? "",
-  sendBackTo: sendBackTo ? `${STAGE_REF}${sendBackTo}` : "",
+  requireApproval: true,
   ...config,
-});
-
-/**
- * Carries `.env` over by default: it is the one gitignored path nearly every repository has, it is
- * small enough to copy, and an agent without it works against a checkout that cannot even start.
- * Heavier paths such as node_modules are left to you, since linking them shares one directory
- * between the worktree and the repository.
- */
-const worktree = (key: string): SeedBinding => ({
-  key,
-  label: "Ensure worktree",
-  actionType: "ensure-worktree",
-  config: { branchPrefix: "wm/", carryOver: ".env" },
-});
-
-const next = (key: string): SeedBinding => ({
-  key,
-  label: "Move to next stage",
-  actionType: "move-stage",
-  config: { target: "next" },
 });
 
 export const approval = (
@@ -174,21 +139,9 @@ export const approval = (
   },
 });
 
-/**
- * Integration actions ship switched off: they need a connection, and the workflow editor refuses
- * to enable one without it. A tracker update failing shouldn't hold up the code work, so they carry on.
- */
-const jira = (key: string, label: string, status: string): SeedBinding => ({
-  key,
-  label,
-  actionType: "jira-transition",
-  config: { connectionId: "", issue: "{{task.links.jira}}", transition: status, comment: "" },
-  enabled: false,
-  continueOnFailure: true,
-});
-
-const submitMr = (): SeedStage => ({
-  name: "Submit MR",
+/** Opens the merge request, waits for you to say it merged, then archives. Review comments go back to `sendBackTo`. */
+const ship = (sendBackTo: string): SeedStage => ({
+  name: "Ship",
   bindings: [
     {
       key: "openMr",
@@ -203,22 +156,12 @@ const submitMr = (): SeedStage => ({
         draft: false,
       },
     },
-    jira("jiraInReview", "Jira → In Review", "In Review"),
+    approval("merged", "Merged", {
+      instructions: "Approve once {{outputs.openMr.mrUrl}} is merged; that archives the task.",
+      sendBackTo,
+    }),
     {
-      key: "ciLoop",
-      label: "CI loop",
-      actionType: "coding-agent",
-      enabled: false,
-      config: codingAgent({
-        mode: "ci",
-        prompt: "Resolve CI failures for {{task.title}}.\n\n{{task.description}}",
-        ciCheckCommand: "echo Configure local and remote checks for this repository before enabling the CI loop. && exit 1",
-        approval: "Review the final changes after CI passes. This does not merge the request.",
-      }),
-    },
-    approval("merged", "Merged", { instructions: "Approve once {{outputs.openMr.mrUrl}} is merged; that archives the task." }),
-    {
-      key: "submitArchive",
+      key: "archive",
       label: "Archive task",
       actionType: "archive-task",
       config: { removeWorktree: true, force: false },
@@ -226,21 +169,24 @@ const submitMr = (): SeedStage => ({
   ],
 });
 
-const FEEDBACK_BLOCK = `Reviewer feedback from a previous attempt (empty if none):
+const FEEDBACK_BLOCK = `Feedback from the merge request, when it was sent back (empty if none):
 {{task.lastFeedback}}`;
 
+/**
+ * Only actions that run: nothing here needs setting up before a first task, and each stage moves
+ * the task on by itself. Tracker updates, a test command or a CI loop are added in the editor by
+ * whoever wants them, since only they know the connection or the command.
+ */
 export const DEFAULT_WORKFLOWS: SeedWorkflow[] = [
   {
     name: "Feature",
     icon: "✨",
-    description: "Requirements → implementation → review → test → merge request.",
+    description: "Plan → build → ship.",
     stages: [
       { name: "Backlog" },
-      { name: "To Pick" },
       {
-        name: "Solidify Reqs",
+        name: "Plan",
         bindings: [
-          worktree("solidifyWorktree"),
           {
             key: "draftRequirements",
             label: "Draft requirements",
@@ -248,14 +194,11 @@ export const DEFAULT_WORKFLOWS: SeedWorkflow[] = [
             config: codingAgent({
               mode: "plan",
               saveResultAs: "requirements.md",
-              approval: "Read requirements.md under Artifacts. Ask for changes and the agent redrafts it.",
               prompt: `You are solidifying requirements for a software task. Do not modify any files.
 
 Task: {{task.title}}
 
 {{task.description}}
-
-${FEEDBACK_BLOCK}
 
 Explore the repository first. Then settle every decision that would change what gets built by
 asking me with the ask_user tool: group related questions, give each 2-4 concrete options with your
@@ -272,22 +215,17 @@ Then reply with only the Markdown requirements document, nothing before it, cont
 ## Open questions (only what is still unsettled; "None" otherwise)`,
             }),
           },
-          next("solidifyNext"),
         ],
       },
       {
-        name: "Implement Reqs",
+        name: "Build",
         bindings: [
-          jira("jiraInProgress", "Jira → In Progress", "In Progress"),
-          worktree("implementWorktree"),
           {
             key: "implement",
             label: "Implement",
             actionType: "coding-agent",
             config: codingAgent({
               mode: "implementation",
-              continueSession: true,
-              approval: "Review the final implementation in {{task.worktreePath}} after the agent has reviewed and fixed it.",
               prompt: `Implement the following task in this repository.
 
 Task: {{task.title}}
@@ -301,72 +239,20 @@ Keep changes focused, run the relevant tests, and commit your work with a clear 
 Finish with a short summary of what changed.`,
             }),
           },
-          next("implementNext"),
         ],
       },
-      {
-        name: "Review Imp",
-        bindings: [
-          approval("reviewDiff", "Review diff", {
-            instructions: "Review the diff on {{task.branch}} against {{task.baseBranch}}.",
-            sendBackTo: "Implement Reqs",
-          }),
-          next("reviewNext"),
-        ],
-      },
-      {
-        name: "Test Imp",
-        bindings: [
-          /**
-           * Also switched off, because only you know how this repository installs. It is seeded
-           * anyway so the step is visible: a worktree is a clean checkout, so unless the worktree
-           * action carries node_modules across, the tests below run against an empty one and fail
-           * for a reason that has nothing to do with the task.
-           */
-          {
-            key: "installDeps",
-            label: "Install dependencies",
-            actionType: "shell",
-            config: { command: "npm ci", cwd: "worktree" },
-            enabled: false,
-          },
-          /**
-           * Ships switched off: there's no way to know this repository's test command, and a stage
-           * that quietly echoes a placeholder would sign a task off as tested when nothing ran.
-           * The placeholder exits non-zero too, so enabling it before editing it fails loudly.
-           */
-          {
-            key: "runTests",
-            label: "Run tests",
-            actionType: "shell",
-            config: {
-              command: 'echo No test command configured. Edit the "Run tests" action for this workflow. && exit 1',
-              cwd: "worktree",
-            },
-            enabled: false,
-          },
-          approval("manualQa", "Manual QA", {
-            // Says plainly what did and didn't happen: with the two actions above off, no test has run.
-            instructions:
-              "Try the change in {{task.worktreePath}}. Automated tests only run here once Install dependencies and Run tests are set up and switched on for this workflow. Approving opens the merge request.",
-            sendBackTo: "Implement Reqs",
-          }),
-          next("testNext"),
-        ],
-      },
-      submitMr(),
+      ship("Build"),
     ],
   },
   {
     name: "Bugfix",
     icon: "🐛",
-    description: "Reproduce → fix → review → merge request.",
+    description: "Investigate → fix → ship.",
     stages: [
       { name: "Backlog" },
       {
-        name: "Reproduce",
+        name: "Investigate",
         bindings: [
-          worktree("reproduceWorktree"),
           {
             key: "investigate",
             label: "Investigate",
@@ -374,7 +260,6 @@ Finish with a short summary of what changed.`,
             config: codingAgent({
               mode: "plan",
               saveResultAs: "reproduction.md",
-              approval: "Read reproduction.md under Artifacts. Ask for changes and the agent digs further.",
               prompt: `Investigate this bug. Do not modify any files.
 
 Bug: {{task.title}}
@@ -384,29 +269,17 @@ Bug: {{task.title}}
 Reply with only a Markdown report: reproduction steps, expected vs actual behaviour, likely root cause (with file references), and a proposed fix.`,
             }),
           },
-          next("reproduceNext"),
         ],
       },
       {
         name: "Fix",
         bindings: [
           {
-            key: "linearInProgress",
-            label: "Linear → In Progress",
-            actionType: "linear-update",
-            config: { connectionId: "", issue: "{{task.links.linear}}", state: "In Progress", comment: "" },
-            enabled: false,
-            continueOnFailure: true,
-          },
-          worktree("fixWorktree"),
-          {
             key: "fix",
             label: "Fix",
             actionType: "coding-agent",
             config: codingAgent({
               mode: "implementation",
-              continueSession: true,
-              approval: "Review the final fix in {{task.worktreePath}} after the agent has reviewed and corrected it.",
               prompt: `Fix this bug in the repository.
 
 Bug: {{task.title}}
@@ -419,20 +292,9 @@ ${FEEDBACK_BLOCK}
 Add a regression test, keep the change minimal, and commit with a clear message. Finish with a short summary.`,
             }),
           },
-          next("fixNext"),
         ],
       },
-      {
-        name: "Review",
-        bindings: [
-          approval("reviewFix", "Review diff", {
-            instructions: "Review the diff on {{task.branch}} against {{task.baseBranch}}.",
-            sendBackTo: "Fix",
-          }),
-          next("reviewNext"),
-        ],
-      },
-      submitMr(),
+      ship("Fix"),
     ],
   },
 ];

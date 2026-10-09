@@ -6,6 +6,8 @@
  * action types and config field names themselves.
  */
 
+import { loopPolicy } from "./loops";
+
 /**
  * The action type for a gate that follows no agent — "approve once the merge request is merged".
  * The engine handles it itself: an approval never reaches the runner, it goes straight to
@@ -46,13 +48,20 @@ export function actionGate(actionType: string, config: Record<string, unknown>):
     return {
       when: "after",
       conversational: true,
-      // Its own field, so the sign-off and the agent's prompt don't collide.
-      instructionsTemplate: text(config.approvalInstructions),
+      instructionsTemplate: text(config.approvalInstructions) || signOffLine(config),
       sendBackTo: text(config.sendBackTo),
       askForNote: true,
     };
   }
   return null;
+}
+
+/** What an agent's sign-off says while it waits, unless the workflow was saved with a line of its own. */
+function signOffLine(config: Record<string, unknown>): string {
+  const policy = loopPolicy(config);
+  if (policy.autonomy === "autonomous") return "Review the changes. Request changes and the agent revises them.";
+  const result = text(config.saveResultAs);
+  return `Read ${result ? `${result} under Artifacts` : "the agent's answer"}. Request changes and the agent redrafts it.`;
 }
 
 export interface GatedRun {

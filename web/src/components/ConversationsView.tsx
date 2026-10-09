@@ -51,7 +51,7 @@ export function ConversationsView({
   };
 
   return (
-    <Page title="Open conversations">
+    <Page title="Open conversations" className="conversations-page">
       {tasks.error && (
         <Callout tone="danger">
           Could not load what needs you: {tasks.error.message}{" "}
@@ -158,10 +158,9 @@ function Conversation({
       {detail.error ? (
         <p className="chat-body chat-notice chat-notice-error">Could not load the task: {detail.error.message}</p>
       ) : run && detail.data ? (
-        <>
-          <Transcript key={run.id} run={run} now={now} archived={false} />
+        <Transcript key={run.id} run={run} now={now} archived={false}>
           <AgentReview key={`review-${run.id}`} run={run} detail={detail.data} stages={workflow?.stages ?? []} />
-        </>
+        </Transcript>
       ) : approval && detail.data ? (
         <div className="chat-body">
           <ApprovalDecision run={approval} task={detail.data.task} stageName={stageName} />

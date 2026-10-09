@@ -24,6 +24,16 @@ describe("approval gates", () => {
     });
   });
 
+  it("writes the sign-off line itself when the agent's config has none", () => {
+    expect(actionGate(CODING_AGENT_ACTION, { requireApproval: true, loopMode: "plan", saveResultAs: "plan.md" })?.instructionsTemplate).toBe(
+      "Read plan.md under Artifacts. Request changes and the agent redrafts it.",
+    );
+    expect(actionGate(CODING_AGENT_ACTION, { requireApproval: true })?.instructionsTemplate).toContain("the agent's answer");
+    expect(actionGate(CODING_AGENT_ACTION, { requireApproval: true, loopMode: "implementation" })?.instructionsTemplate).toBe(
+      "Review the changes. Request changes and the agent revises them.",
+    );
+  });
+
   it("gives other actions no gate", () => {
     expect(actionGate("shell", { requireApproval: true, instructions: "x" })).toBeNull();
   });

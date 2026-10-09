@@ -9,7 +9,7 @@ import { SendBackDialog } from "./dialogs";
 import { ReviewArtifacts } from "./ArtifactsPanel";
 import { DiffPanel } from "./DiffPanel";
 
-/** Stays visible below the transcript throughout the draft → revise → review loop. */
+/** Follows the transcript throughout the draft → revise → review loop. */
 export function AgentReview({
   run,
   detail,
@@ -109,7 +109,7 @@ export function AgentReview({
           <>
             {instructions && <p className="approval-text agent-review-instructions">{instructions}</p>}
             <ReviewArtifacts taskId={detail.task.id} />
-            {!readOnly && <DiffPanel task={detail.task} />}
+            {!readOnly && <DiffPanel task={detail.task} previewLimit={10} />}
             <Field label="What would you like changed?" tip="Ctrl+Enter (⌘+Enter on a Mac) sends it.">
               <textarea
                 rows={2}

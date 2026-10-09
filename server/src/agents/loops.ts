@@ -1,5 +1,7 @@
 import type { AgentRunResult } from "./run";
 import type { AgentTurns } from "./turns";
+import type { Verification } from "../services/artifact-history";
+import type { DecisionReport } from "./decisions";
 
 /** Sent in place of the prompt when a run picks its own session back up after a usage limit. */
 export const CONTINUE_AFTER_LIMIT = "Your usage limit has reset. Carry on with the task from where you stopped.";
@@ -16,7 +18,7 @@ export type SavedLoop =
       corrections: number;
       sessionId: string | null;
       /** The author's latest draft, once there is one. */
-      draft: { text: string; sessionId: string | null } | null;
+      draft: { text: string; sessionId: string | null; version?: number } | null;
       feedback: string;
     }
   | {
@@ -37,6 +39,16 @@ export interface LoopInput {
   /** The action's own prompt: what the work is for. */
   instructions: string;
   maxCorrections: number;
+  /** Optional checks for this document, in addition to its task instructions. */
+  verificationInstructions?: string;
+  loopLabel?: string;
+  /** Request a cumulative decision record in the final independent review. Read after each build. */
+  decisionContext?(): string;
+  /** Persist each finished build before reviewing it, and its paired verdict before revising it. */
+  history?: {
+    build(text: string): number;
+    verify(version: number, verification: Verification): void;
+  };
   /** What you have answered the author so far in this run, one "question → answer" per entry. */
   answered?(): string[];
   saved?: SavedLoop;
@@ -46,6 +58,8 @@ export interface LoopInput {
 
 /** How a loop ended. A run that stops early carries `saved`, so it can go round again from there. */
 export interface LoopOutcome extends Omit<AgentRunResult, "usage"> {
+  decisions?: DecisionReport;
+  buildVersion?: number;
   saved?: SavedLoop;
   /** `sessionId` is the reviewer's own session, when it is not the one the run carries on in. */
   review?: { decision: string; feedback: string; sessionId?: string | null };

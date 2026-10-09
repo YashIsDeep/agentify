@@ -9,7 +9,7 @@ The **Archive** page lists finished tasks, and also defines what archiving a tas
 - empty states: "Nothing archived yet", or "No archived task matches “…”". A failed load shows an error with **Try again**, never an empty state.
 - archive from the drawer: the **Archive task** icon opens a dialog listing what happens. It removes the git worktree (the branch is kept), deletes transcripts and logs, and keeps artifacts and the timeline.
 - dirty worktree: a warn callout appears, and the button becomes **Discard changes and archive**. After a server error it becomes **Force archive**.
-- archive action: the `archive-task` workflow action does the same unattended. The default Submit MR stage ends with it.
+- archive action: the `archive-task` workflow action does the same unattended. The default Ship stage ends with it.
 - archived drawer: a read-only Details fieldset, no stage panel, a disabled stepper, and empty transcripts.
 
 ## How to get to it (user POV)

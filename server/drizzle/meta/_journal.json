@@ -71,6 +71,13 @@
       "when": 1789302652569,
       "tag": "0009_agent_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791203614201,
+      "tag": "0010_stay_when_done",
+      "breakpoints": true
     }
   ]
 }

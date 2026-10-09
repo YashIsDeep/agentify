@@ -6,7 +6,7 @@ A card under the chat transcript for a coding agent with **Wait for my approval 
 
 - status heading while working: "Preparing first draft…", "Preparing and reviewing…" (loop with review), "Revising…", "Checking CI and fixing failures…", or "Waiting for usage limit".
 - status heading when ready: "Ready for review", or "Final work ready for approval" once an automatic review or CI pass ran. Tags: "First draft", "Revision N", "Agent reviewed", "CI passed".
-- instructions: the action's **Approval instructions**, templated.
+- instructions: a standard line for the loop mode ("Read plan.md under Artifacts…", "Review the changes…"); workflows saved with their own **Approval instructions** keep them.
 - review artifacts + diff: the task's artifacts list, and a **Changes** diff panel (hidden for read-only runs).
 - diff panel: "N files, +a −d" or "none against <base> yet". Each file row shows a status letter, the path (old → new for renames) and counts, and expands to its hunks. **Copy <path>** and **Read the diff again** sit in the panel header. Notes say when the diff is truncated or uncommitted work isn't shown.
 - feedback: "What would you like changed?" textarea (max 10,000). **Ctrl+Enter** / **⌘+Enter** sends.

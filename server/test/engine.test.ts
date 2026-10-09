@@ -89,6 +89,42 @@ describe("engine", () => {
     expect(finished.runs.find((run) => run.bindingKey === "check")?.outputs).toMatchObject({ decision: "approved" });
   });
 
+  it("moves a task on when a stage's actions finish, unless the stage keeps it", async () => {
+    const write = (key: string) => ({ key, label: key, actionType: "write-artifact", config: { name: `${key}.md`, content: key } });
+    const workflowId = h.addWorkflow({
+      name: "Auto",
+      description: "",
+      stages: [
+        { name: "Backlog", stayWhenDone: false },
+        { name: "One", stayWhenDone: false, bindings: [write("one"), approval("check", "Check")] },
+        { name: "Two", stayWhenDone: false, bindings: [write("two")] },
+        { name: "Three", stayWhenDone: true, bindings: [write("three")] },
+        { name: "Four", stayWhenDone: false, bindings: [write("four")] },
+      ],
+    });
+    const task = h.engine.createTask({ workflowId, title: "Widget" });
+    await h.runner.idle();
+    // No actions, nothing to finish: it waits to be picked up.
+    expect(q.stageName(task.id)).toBe("Backlog");
+
+    h.engine.moveTask(task.id, h.stageId(workflowId, "One"));
+    await waitFor(() => q.latest(task.id, "check")?.status === "awaiting-approval");
+    expect(q.stageName(task.id)).toBe("One");
+
+    // Approving the last action carries it through Two and stops in Three, which keeps its tasks.
+    h.engine.approveRun(q.latest(task.id, "check")!.id);
+    await waitFor(() => q.stageName(task.id) === "Three" && q.visitDone(task.id));
+    await h.runner.idle();
+    expect(q.stageName(task.id)).toBe("Three");
+    expect(artifact(task.id, "two.md")).toBe("two");
+    expect(artifact(task.id, "four.md")).toBeUndefined();
+
+    // The last stage has nowhere to go.
+    h.engine.moveTask(task.id, h.stageId(workflowId, "Four"));
+    await waitFor(() => q.visitDone(task.id));
+    expect(q.stageName(task.id)).toBe("Four");
+  });
+
   it("holds the rest of the list after a failure until the action is retried or skipped", async () => {
     const workflowId = h.addWorkflow({
       name: "Flaky",

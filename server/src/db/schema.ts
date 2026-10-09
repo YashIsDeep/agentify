@@ -29,6 +29,8 @@ export const stages = sqliteTable(
     defaultAgent: text("default_agent"),
     defaultModel: text("default_model"),
     defaultEffort: text("default_effort"),
+    /** A task whose actions here have all finished waits instead of moving to the next stage. */
+    stayWhenDone: integer("stay_when_done", { mode: "boolean" }).notNull().default(false),
   },
   (t) => [index("stages_workflow_idx").on(t.workflowId, t.position)],
 );

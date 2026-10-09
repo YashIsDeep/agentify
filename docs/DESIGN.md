@@ -431,23 +431,21 @@ is kept.
 
 ## 4. Default workflows
 
-### Feature (from the sketch)
+### Feature
 | Stage | Actions, in order |
 |---|---|
 | Backlog | — |
-| To Pick | — |
-| Solidify Reqs | `ensure-worktree` → `coding-agent` (read-only, settles decisions with you through `ask_user` before writing, save result as `requirements.md`, waits for your approval — Request changes redrafts it in the same session) → `move-stage next` |
-| Implement Reqs | `jira-transition` In Progress (off) → `ensure-worktree` → `coding-agent` (autonomous, continue session, waits for your approval) with `{{artifacts["requirements.md"]}}` and `{{task.lastFeedback}}` → `move-stage next` |
-| Review Imp | Approval *Review diff* (Send back to Implement Reqs, with a note) → `move-stage next` |
-| Test Imp | `shell` *Install dependencies* (off) → `shell` *Run tests* (off, placeholder) → Approval *Manual QA* (says tests only run once those are set up, and that approving opens the MR; Send back to Implement Reqs) → `move-stage next` |
-| Submit MR | `open-merge-request` → `jira-transition` In Review (off) → Approval *Merged* → `archive-task` |
-
-JIRA/Linear actions are included but **switched off** until a connection exists, and marked
-*continue if this fails*: Feature gets `jira-transition` first in *Implement Reqs* and after the MR
-opens, Bugfix a `linear-update` first in *Fix*.
+| Plan | `coding-agent` (plan loop: read-only, settles decisions with you through `ask_user`, saves `requirements.md`, waits for your approval) |
+| Build | `coding-agent` (implement loop: autonomous, reviews and fixes its own work, waits for your approval on the diff) with `{{artifacts["requirements.md"]}}` and `{{task.lastFeedback}}` |
+| Ship | `open-merge-request` → Approval *Merged* (Send back to Build, with a note) → `archive-task` |
 
 ### Bugfix
-Backlog → Reproduce → Fix → Review → Submit MR.
+Backlog → Investigate → Fix → Ship, the same shape.
+
+Every seeded action runs as shipped: nothing is switched off and nothing needs setting up first.
+There is no `ensure-worktree` or `move-stage` in them — the worktree is made on demand and a
+finished stage moves the task on (§9, *Less to configure*). Tracker updates, a test command or a CI
+loop are added in the editor.
 
 Only these two are seeded. Anything else — a research spike, say — is built in the workflow editor.
 
@@ -613,3 +611,20 @@ omitted; `secretsSet` lists which are held) · `POST /api/connections` · `PUT /
 
 1. Git host: chosen per repo from the remote URL (github.com → `gh`, otherwise GitLab push options).
 2. Workflow export/import: not in v1; the workflow format stays plain and self-contained so it's easy to add.
+3. **Less to configure** (2026-10-05). The goal: a workflow that works with only a prompt written.
+   - *Worktree on demand.* An action that works in the worktree (coding agent, merge request, shell
+     run in the worktree) creates it first when the task wants one and has none, with branch prefix
+     `wm/` and `.env` carried over. The *Ensure worktree* action stays for other settings.
+   - *Stages advance.* When a stage's last action settles, the task moves to the next stage and
+     runs it. A stage with no actions never finishes, so Backlog still holds tasks. *Stay here when
+     done* on the stage turns it off; migration 0010 set it on every existing stage whose last
+     enabled action wasn't a move or an archive, so saved workflows behave as before. *Move to
+     stage* stays for jumping elsewhere.
+   - *Coding agent form.* Loop, Prompt, Agent and *Wait for my approval* (plus Autonomy for a single
+     run and the check command for a CI loop). Model, effort, corrections, verification criteria,
+     Send back and *Save result as* are under Advanced. *Continue the previous session* is gone
+     from the form and on for new actions; *Approval instructions* is gone and the sign-off shows a
+     standard line. Workflows saved with either keep what they had.
+   - *Action form.* Name sits under Advanced beside Key; on/off is a button on the action's row.
+   - *New task.* Repository and base branch start as the latest task's; *Start in* and *Use a
+     worktree* fold under More.

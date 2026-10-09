@@ -1,9 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { z } from "zod";
 import { resolveInside } from "../paths";
 import type { ActionDefinition } from "./types";
 import { artifactName } from "./validation";
+import { artifactHistory } from "../services/artifact-history";
 
 const configSchema = z.object({
   name: artifactName("File name"),
@@ -21,8 +20,9 @@ export const writeArtifactAction: ActionDefinition<z.output<typeof configSchema>
   ],
   async run({ config, artifactDir, log }) {
     const path = resolveInside(artifactDir, config.name);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, config.content, "utf8");
+    const history = artifactHistory(artifactDir, config.name);
+    history.build(config.content);
+    history.publish(config.content);
     log(`Wrote ${config.name}`);
     return { outputs: { name: config.name, path }, summary: `wrote ${config.name}` };
   },
