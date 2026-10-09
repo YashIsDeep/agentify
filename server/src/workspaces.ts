@@ -13,10 +13,13 @@ import { eq } from "drizzle-orm";
 import { z, ZodError } from "zod";
 import { bootstrap, type AppContext } from "./bootstrap";
 import type { AppConfig } from "./config";
-import { localOnly } from "./api/security";
 import * as s from "./db/schema";
 import { EngineError } from "./engine/engine";
 import { writePrivateFile } from "./lib/atomic-file";
+import { gate, type GateVariables } from "./remote/guard";
+import { mountRemoteAccess } from "./remote/routes";
+import { RemoteAccessService, type RemoteAccessOptions } from "./remote/service";
+import { ServerEvents } from "./server-events";
 import { MAX_CONCURRENT_AGENTS_KEY } from "./services/settings";
 
 type BootstrapOptions = Parameters<typeof bootstrap>[1];
@@ -186,37 +189,61 @@ export class WorkspaceManager {
   }
 }
 
-export function bootstrapWorkspaces(config: AppConfig, options: BootstrapOptions = {}) {
-  const workspaces = new WorkspaceManager(config, options);
-  const app = new Hono();
-  app.use("*", localOnly({ allowedOriginPorts: [config.port, ...config.devOriginPorts] }));
+export function bootstrapWorkspaces(
+  config: AppConfig,
+  options: BootstrapOptions & { remote?: Partial<Omit<RemoteAccessOptions, "events">> } = {},
+) {
+  const { remote: remoteOptions, ...bootstrapOptions } = options;
+  const events = new ServerEvents();
+  const workspaces = new WorkspaceManager(config, { ...bootstrapOptions, serverEvents: events });
+  const remote = new RemoteAccessService({ dataDir: config.dataDir, uiPort: config.uiPort ?? config.port, events, ...remoteOptions });
+  const settingsChanged = (scope: "workspaces" | "concurrency") => events.publish({ type: "settings.changed", scope });
+
+  const app = new Hono<{ Variables: GateVariables }>();
+  app.use("*", gate({ store: remote.store, cookieName: remote.cookieName, allowedOriginPorts: [config.port, ...config.devOriginPorts] }));
   app.onError((error, c) => {
     if (error instanceof EngineError) return c.json({ error: error.message }, error.status);
     if (error instanceof ZodError) return c.json({ error: z.prettifyError(error) }, 400);
     console.error(error);
     return c.json({ error: "Internal server error" }, 500);
   });
+  mountRemoteAccess(app, remote, (c) => readBody(c.req.raw));
   app.get("/api/settings/concurrency", (c) => c.json(workspaces.concurrency()));
-  app.put("/api/settings/concurrency", async (c) => c.json(workspaces.setConcurrency(await readBody(c.req.raw))));
+  app.put("/api/settings/concurrency", async (c) => {
+    const saved = workspaces.setConcurrency(await readBody(c.req.raw));
+    settingsChanged("concurrency");
+    return c.json(saved);
+  });
   app.get("/api/workspaces", (c) => c.json(workspaces.list()));
-  app.post("/api/workspaces", async (c) => c.json(workspaces.create(await readBody(c.req.raw)), 201));
-  app.patch("/api/workspaces/:workspaceId", async (c) =>
-    c.json(workspaces.rename(c.req.param("workspaceId"), await readBody(c.req.raw))),
-  );
-  app.post("/api/workspaces/:workspaceId/clone", async (c) =>
-    c.json(workspaces.create(await readBody(c.req.raw), c.req.param("workspaceId")), 201),
-  );
+  app.post("/api/workspaces", async (c) => {
+    const created = workspaces.create(await readBody(c.req.raw));
+    settingsChanged("workspaces");
+    return c.json(created, 201);
+  });
+  app.patch("/api/workspaces/:workspaceId", async (c) => {
+    const renamed = workspaces.rename(c.req.param("workspaceId"), await readBody(c.req.raw));
+    settingsChanged("workspaces");
+    return c.json(renamed);
+  });
+  app.post("/api/workspaces/:workspaceId/clone", async (c) => {
+    const created = workspaces.create(await readBody(c.req.raw), c.req.param("workspaceId"));
+    settingsChanged("workspaces");
+    return c.json(created, 201);
+  });
+  // A workspace's app trusts the gate's verdict, which rides along in env where no request can forge it.
+  const forward = (context: AppContext, request: Request, c: { env: unknown; get: (key: "access") => GateVariables["access"] }) =>
+    context.app.fetch(request, { ...(c.env as object | undefined), access: c.get("access") });
   app.all("/api/workspaces/:workspaceId/*", (c) => {
     const id = c.req.param("workspaceId");
     const context = workspaces.get(id);
     const url = new URL(c.req.url);
     const suffix = url.pathname.slice(`/api/workspaces/${id}`.length);
     url.pathname = suffix.startsWith("/mcp/") ? suffix : `/api${suffix}`;
-    return context.app.fetch(new Request(url, c.req.raw));
+    return forward(context, new Request(url, c.req.raw), c);
   });
   // Older local API clients and saved URLs still address the original workspace.
-  app.all("*", (c) => workspaces.defaultContext.app.fetch(c.req.raw));
-  return { workspaces, app, start: () => workspaces.start(), close: () => workspaces.close() };
+  app.all("*", (c) => forward(workspaces.defaultContext, c.req.raw, c));
+  return { workspaces, remote, events, app, start: () => workspaces.start(), close: () => workspaces.close() };
 }
 
 async function readBody(request: Request): Promise<unknown> {

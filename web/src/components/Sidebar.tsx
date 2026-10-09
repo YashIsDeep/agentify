@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { cls } from "../lib/format";
 import { PAGES, type View } from "../views";
 import { isDialogOpen } from "../ui";
+import { RemoteIndicator } from "./RemoteIndicator";
 import { StatusCounters } from "./StatusCounters";
 import { ThemeToggle } from "./ThemeToggle";
 import { WorkflowIcon } from "./WorkflowIcon";
@@ -131,12 +132,15 @@ export function Sidebar({
             }}
           />
           <div className="sidebar-footer-row">
-            <span
-              className={cls("live", connected ? "live-on" : "live-off")}
-              title={connected ? "Live updates connected" : "Reconnecting to the server…"}
-            >
-              <span className="live-dot" />
-              {connected ? "Live" : "Offline"}
+            <span className="sidebar-footer-status">
+              <span
+                className={cls("live", connected ? "live-on" : "live-off")}
+                title={connected ? "Live updates connected" : "Reconnecting to the server…"}
+              >
+                <span className="live-dot" />
+                {connected ? "Live" : "Offline"}
+              </span>
+              <RemoteIndicator onOpen={go(() => onSelectView("devices"))} />
             </span>
             <ThemeToggle />
           </div>

@@ -13,20 +13,41 @@ npm start
 Open `http://127.0.0.1:2712`. Data lives in `%USERPROFILE%\.agentify` (an existing `%USERPROFILE%\.workflow-manager` from before the
 rename is still used when `.agentify` doesn't exist).
 
-This is a trusted, single-user local application. Keep it on loopback; do not expose it
-through a tunnel or reverse proxy. Autonomous agents and shell actions run with your OS
-account's access, including access to the local API. Workspaces and approval steps organize
-work; they do not isolate a hostile local process. Use a separate OS account or VM for
-untrusted repositories and agents. See [the security review](docs/SECURITY-2026-09-24.md).
-The [filesystem follow-up](docs/SECURITY-2026-09-25.md) documents additional link and
-temporary-file protections, including restrictions on linked carry-over paths and static assets.
+This is a trusted, single-user local application. It listens on loopback only, unless you turn
+on remote access (below), and then only devices you pair on your own network or tailnet get in.
+Don't put it behind a public tunnel: it refuses requests from public addresses anyway.
+Autonomous agents and shell actions run with your OS account's access, including access to the
+local API. Workspaces and approval steps organize work; they do not isolate a hostile local
+process. Use a separate OS account or VM for untrusted repositories and agents. See
+[the security review](docs/SECURITY-2026-09-24.md). The [filesystem follow-up](docs/SECURITY-2026-09-25.md)
+documents additional link and temporary-file protections, including restrictions on linked
+carry-over paths and static assets.
 
 | Env var | Default | |
 |---|---|---|
 | `WM_DATA_DIR` | `~/.agentify` | database, artifacts, transcripts, worktrees |
 | `WM_PORT` | `2712` | `2711` under `npm run dev`, where Vite holds 2712 |
+| `WM_REMOTE_HOST` | `0.0.0.0` | the address remote access listens on, e.g. only your Tailscale IP |
 
 `npm start` builds the web app and serves it, with the API, from that address.
+
+## Use it from your phone
+
+On this computer, open **Devices** in the sidebar and turn on **Remote access**. The page lists
+the addresses another device can open, and **Connect a device** shows a QR code and a code to type.
+
+- **Same Wi-Fi:** scan the QR code with the phone's camera. The first time remote access is on,
+  Windows Firewall asks whether Node.js may accept connections: allow it on private networks only.
+- **Away from home:** install [Tailscale](https://tailscale.com) on this computer and the phone,
+  then run `tailscale serve --bg 2712` here once. Devices then offers an
+  `https://<computer>.<tailnet>.ts.net` address that works wherever the phone has Tailscale.
+
+A paired device can do everything except turn remote access on or off and pair or remove devices,
+which stay on this computer; it can sign itself out. It stays paired until you remove it or it goes
+30 days unused. Your own browser on this computer never pairs.
+
+Under `npm run dev` the page comes from Vite, which only listens locally: start the web half with
+`npm run dev -w web -- --host` to reach it from a phone.
 
 ## Coding agents
 

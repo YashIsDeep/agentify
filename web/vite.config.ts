@@ -6,8 +6,17 @@ export default defineConfig({
   server: {
     port: 2712,
     strictPort: true,
-    // Keep the browser's Host/Origin (localhost:2712) so the API's localhost guard accepts them.
-    proxy: { "/api": { target: "http://127.0.0.1:2711", changeOrigin: false } },
+    // Started with --host, the dev UI can be opened from a phone; tailscale serve sends its tailnet name.
+    allowedHosts: [".ts.net"],
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:2711",
+        // Keep the browser's Host/Origin (localhost:2712) so the API's localhost guard accepts them.
+        changeOrigin: false,
+        // And say who connected: without X-Forwarded-For, any device reaching Vite would look like this computer.
+        xfwd: true,
+      },
+    },
   },
   // Served from localhost only, so a single ~500 kB bundle is fine.
   build: { chunkSizeWarningLimit: 1024 },

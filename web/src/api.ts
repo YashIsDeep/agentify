@@ -14,8 +14,10 @@ import type {
   CreateTaskInput,
   CreateWorkflowInput,
   CreateWorkspaceInput,
+  RemoteAccessStatus,
   RepoInfo,
   RunLogLine,
+  SessionInfo,
   SaveWorkflowInput,
   TaskDetail,
   TaskDiff,
@@ -41,7 +43,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path: string, init: { method?: string; json?: unknown } = {}): Promise<Response> {
+/**
+ * Fired when the server turns a request away (401, 403): the device may have been removed or remote
+ * access switched off, so whoever shows the session should ask again.
+ */
+export const ACCESS_LOST_EVENT = "agentify:access-lost";
+
+async function request(path: string, init: { method?: string; json?: unknown; isSessionCheck?: boolean } = {}): Promise<Response> {
   const hasBody = init.json !== undefined;
   const response = await fetch(path, {
     method: init.method ?? "GET",
@@ -49,6 +57,8 @@ async function request(path: string, init: { method?: string; json?: unknown } =
     body: hasBody ? JSON.stringify(init.json) : undefined,
   });
   if (!response.ok) {
+    // The session check is what this event asks for, so its own refusal mustn't ask again.
+    if ((response.status === 401 || response.status === 403) && !init.isSessionCheck) window.dispatchEvent(new Event(ACCESS_LOST_EVENT));
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
     throw new ApiError(body?.error ?? `${response.status} ${response.statusText}`, response.status);
   }
@@ -73,6 +83,22 @@ export const serverApi = {
   concurrency: () => json<ConcurrencySettings>("/api/settings/concurrency"),
   saveConcurrency: (settings: ConcurrencySettings) =>
     json<ConcurrencySettings>("/api/settings/concurrency", { method: "PUT", json: settings }),
+
+  remoteAccess: () => json<RemoteAccessStatus>("/api/remote-access"),
+  setRemoteAccess: (enabled: boolean) => json<RemoteAccessStatus>("/api/remote-access", { method: "PUT", json: { enabled } }),
+  /** Replaces any code still waiting. */
+  startPairing: () => post<RemoteAccessStatus>("/api/remote-access/pairing"),
+  /** Only if `code` is still the one waiting. */
+  cancelPairing: async (code: string) => void (await request(`/api/remote-access/pairing?code=${enc(code)}`, { method: "DELETE" })),
+  removeDevice: async (id: string) => void (await request(`/api/devices/${enc(id)}`, { method: "DELETE" })),
+};
+
+/** Who this browser is to the server, and how a device that isn't paired yet becomes one. */
+export const sessionApi = {
+  get: async () => (await (await request("/api/session", { isSessionCheck: true })).json()) as SessionInfo,
+  pair: async (code: string) =>
+    (await (await request("/api/devices/pair", { method: "POST", json: { code }, isSessionCheck: true })).json()) as SessionInfo,
+  signOut: async () => void (await request("/api/devices/sign-out", { method: "POST" })),
 };
 
 /** Bound once to a workspace: an in-flight callback can never write into a newly selected one. */

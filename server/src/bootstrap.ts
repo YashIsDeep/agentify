@@ -9,6 +9,7 @@ import type { HttpFetch } from "./integrations/types";
 import { Runner } from "./engine/runner";
 import { createPaths, ensureBaseDirs } from "./paths";
 import { seedDefaultWorkflows } from "./seed/workflows";
+import type { ServerEvents } from "./server-events";
 import { type ArchiveOptions, archiveTask } from "./services/archive";
 import { ConnectionService } from "./services/connections";
 import { QuestionService } from "./services/questions";
@@ -22,7 +23,16 @@ const WEB_DIST = fileURLToPath(new URL("../../web/dist", import.meta.url));
 /** Wires the app together. Call `runner.start()` to begin executing actions. */
 export function bootstrap(
   config: AppConfig,
-  options: { registry?: ActionRegistry; seed?: boolean; http?: HttpFetch; workspaceId?: string; externalLongRuns?: () => number; maxConcurrentLongRuns?: () => number } = {},
+  options: {
+    registry?: ActionRegistry;
+    seed?: boolean;
+    http?: HttpFetch;
+    workspaceId?: string;
+    externalLongRuns?: () => number;
+    maxConcurrentLongRuns?: () => number;
+    /** Server-wide changes, passed on to this workspace's open streams. */
+    serverEvents?: ServerEvents;
+  } = {},
 ) {
   const paths = createPaths(config.dataDir);
   ensureBaseDirs(paths);
@@ -67,6 +77,7 @@ export function bootstrap(
     tickets,
     archiveTask: archive,
     webDist: WEB_DIST,
+    serverEvents: options.serverEvents,
   });
 
   return {

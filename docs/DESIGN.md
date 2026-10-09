@@ -495,7 +495,11 @@ Components, tokens and the rules screens follow are in [DESIGN-SYSTEM.md](DESIGN
   whenever the CLI isn't ready; the rest of the setup folds out below it.
 - **Retry dialog**: agent + model + effort dropdowns prefilled from the failed run.
 - **Archive**: searchable list; read-only timeline summary + artifacts.
-- Live updates via **Server-Sent Events**.
+- **Devices** (§10): on this computer, the Remote access switch, the addresses other devices can
+  open and *Connect a device* (QR code + typed code); everywhere, the paired devices with when each
+  was last used — Remove on this computer, Sign out on the device itself. While remote access is on,
+  the sidebar footer shows a device icon and count beside Live.
+- Live updates via **Server-Sent Events**, settings pages included (`settings.changed`).
 
 ---
 
@@ -516,9 +520,11 @@ workflow-manager/
   - `tasks/<taskId>/artifacts/` (kept)
   - `tasks/<taskId>/runs/<runId>.jsonl` (transcripts; purged on archive)
   - `worktrees/<taskSlug>/` (removed on archive)
-- **Security**: binds `127.0.0.1` only; rejects requests whose `Origin`/`Host` isn't the
-  local app (the `shell` action makes a reachable server equivalent to RCE — blocks
-  DNS-rebinding / CSRF from other browser tabs).
+- **Security**: listens on `127.0.0.1`, and on the network only while remote access is on (§10).
+  This computer's own browser — loopback peer, local `Host`, not relayed by a proxy — must send the
+  local app's `Origin` (the `shell` action makes a reachable server equivalent to RCE — blocks
+  DNS-rebinding / CSRF from other browser tabs). Every other request is a device: private
+  addresses only, same-origin, and a paired device's cookie.
 
 ### Tables (sketch)
 `workflows` · `stages` · `action_bindings` · `tasks` · `stage_visits` · `action_runs` ·
@@ -563,6 +569,7 @@ Active tasks restart their current stage as a new attempt with nothing started.
 | 9. Ordered actions | phases and triggers replaced by one ordered list per stage; `approval` action (Approve / Send back); Skip, Start, *continue if this fails*; migration 0007 converting existing workflows | ✅ done (132 server + 26 web tests) |
 
 | 10. Agent approvals | approval folded into `coding-agent` (*wait for my approval*, instructions, optional Send back) with **Request changes** resuming the same run and session; `awaiting-approval` status for both kinds of gate; chat composer; migration 0009 | ✅ done (143 server + 28 web tests) |
+| 11. Remote access | §10: the gate (host vs device, private networks only), pairing with QR + code, device cookies, the Devices page and footer indicator, a second listener behind the switch, Tailscale address detection, live `settings.changed`, reconnect on wake, insecure-context fill-ins | ✅ built (254 server + 43 web tests); not yet tried from a real phone |
 
 The Feature workflow's **Run tests** action is a placeholder `echo` until a real command is configured.
 
@@ -607,7 +614,66 @@ omitted; `secretsSet` lists which are held) · `POST /api/connections` · `PUT /
 `POST /api/tickets/draft {link}` (reads the ticket, drafts `{title, description}`; see §3.5) ·
 `GET|PUT /api/settings/ticket-draft {agent, model, effort}` (a null agent copies the ticket; the model is validated)
 
+### API (remote access, §10)
+`GET /api/session` (`host`, `device` with the device, or `none`) · `POST /api/devices/pair {code}`
+(sets the device cookie) · `POST /api/devices/sign-out` · `GET /api/remote-access` (switch,
+listener error, addresses, the waiting code for the host only, paired devices) ·
+host only: `PUT /api/remote-access {enabled}` · `POST /api/remote-access/pairing` (a fresh code,
+replacing any waiting one) · `DELETE /api/remote-access/pairing?code=` · `DELETE /api/devices/:id`
+
 ## 9. Decided later rounds
 
 1. Git host: chosen per repo from the remote URL (github.com → `gh`, otherwise GitLab push options).
 2. Workflow export/import: not in v1; the workflow format stays plain and self-contained so it's easy to add.
+
+## 10. Remote access
+
+Use Agentify from your phone or another computer while it runs here (step 11). Decided 2 Oct 2026
+in one round of eleven questions, every recommendation taken.
+
+- **One state, independent views.** Every device works on this computer's data and gets live
+  updates; each navigates on its own. Nothing mirrors this computer's screen.
+- **This computer (the host).** Its own browser connects from loopback, names a local `Host`, and
+  isn't relayed by a proxy: no `Tailscale-*` headers, a local `X-Forwarded-Host`, and a loopback
+  last X-Forwarded-For hop. (A proxy on this machine — `tailscale serve`, Vite — appends who
+  connected to it, so the last hop that isn't this machine is the device; hops further left were
+  written by the device and prove nothing.) It never pairs, and is checked as before.
+- **Everyone else is a device.** Let in only while the switch is on; only from a private address
+  (RFC 1918, the CGNAT range tailnets use, IPv6 ULA and link-local), so the internet is refused even
+  through a tunnel (ngrok, cloudflared, Tailscale Funnel); only same-origin; and only with a paired
+  device's cookie, apart from the page itself, `GET /api/session` and `POST /api/devices/pair`. The
+  agents' question channels (`/mcp/…`) are never open to a device. Workspace apps trust the gate's
+  verdict, which travels in the request's env where no request can forge it.
+- **Pairing.** *Connect a device* shows a one-use code — eight Crockford base32 characters,
+  `XXXX-XXXX`, typed forgivingly (case, O for 0, I or L for 1) — as a QR link
+  (`<address>/#pair=CODE`; browsers never send the fragment) and as text. It lasts 10 minutes, five
+  wrong guesses throw it away, and closing the dialog withdraws it. Redeeming it sets
+  `agentify_device_<port>` (HttpOnly, SameSite=Strict, Secure behind https). Only the token's SHA-256
+  is kept, in `remote-access.json` beside the workspace catalog, so cloning a workspace never copies
+  a device. A device unused for 30 days is forgotten.
+- **What a device may do.** Everything, except turning remote access on or off, pairing, and
+  removing other devices; it can sign itself out. Restricting more would add nothing: approving an
+  autonomous agent already runs code here.
+- **The switch.** Off by default; on the Devices page; applied without a restart. Off is the old
+  server exactly: the 127.0.0.1 listener alone. On adds a second listener on every interface
+  (`WM_REMOTE_HOST` narrows it), so flipping it never drops this computer's own tab. Switching off
+  ends every device's open stream; removing a device ends that device's.
+- **Addresses.** `tailscale serve`'s https address first, when it proxies to this server; then LAN
+  IPv4 addresses (virtual adapters skipped); then the plain tailnet name. With Tailscale running but
+  not serving, the page shows the `tailscale serve --bg <port>` command.
+- **Plain http.** A device on a LAN address isn't a secure context, so browsers withhold
+  `crypto.randomUUID` (new ids in the workflow editor) and `navigator.clipboard`;
+  `web/src/lib/insecure-context.ts` fills both in.
+- **Settings stay live.** `settings.changed {scope}` on the event stream — workspaces, concurrency,
+  remote access, agents, connections, ticket drafting — refetches those pages on every open screen.
+  A tab coming back from the background (phones freeze them within seconds) reconnects at once
+  rather than waiting for the 40s watchdog.
+- **Terms.** Still one person: no accounts, nobody else using your subscriptions. The 11 Sep rule
+  "keep it on 127.0.0.1" became "127.0.0.1 unless remote access is on, and then only your own
+  devices".
+
+Next: step 12, the phone layout — the Needs-you queue, the task drawer, the agent chat with a run
+switcher where its list is hidden, and the board as snapping columns with long-press drag, plus a
+home-screen manifest that opens Needs you. Step 13 keeps unsent text (answers to an agent's
+question, Request changes notes) on this computer as you type. Notifications come after that, over
+Tailscale's https.

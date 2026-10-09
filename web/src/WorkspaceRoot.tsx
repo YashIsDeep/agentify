@@ -36,6 +36,7 @@ export function WorkspaceRoot() {
       key={current.id}
       current={current}
       list={list}
+      refreshCatalog={() => void queryClient.invalidateQueries({ queryKey: ["workspaces"] })}
       onSaved={(workspace) => {
         queryClient.setQueryData<WorkspaceInfo[]>(["workspaces"], (previous = []) =>
           previous.some((item) => item.id === workspace.id)
@@ -47,9 +48,10 @@ export function WorkspaceRoot() {
   );
 }
 
-function WorkspaceSession({ current, list, onSaved }: {
+function WorkspaceSession({ current, list, refreshCatalog, onSaved }: {
   current: WorkspaceInfo;
   list: WorkspaceInfo[];
+  refreshCatalog: () => void;
   onSaved: (workspace: WorkspaceInfo) => void;
 }) {
   // A separate API client and query cache per mounted workspace also isolate pending requests.
@@ -62,6 +64,7 @@ function WorkspaceSession({ current, list, onSaved }: {
       list,
       select: (id) => setQueryParams({ workspace: id, workflow: null, view: null, task: null }),
       manage: setAction,
+      refreshCatalog,
     }}>
       <ApiContext.Provider value={api}>
         <QueryClientProvider client={queryClient}>

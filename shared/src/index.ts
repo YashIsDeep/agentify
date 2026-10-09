@@ -1,6 +1,8 @@
 import { z } from "zod";
+import type { SettingsScope } from "./remote";
 
 export * from "./loops";
+export * from "./remote";
 
 // ---------- workspaces ----------
 
@@ -680,7 +682,9 @@ export type ServerEvent =
   | { type: "workflow.changed"; workflowId: string }
   | { type: "run.changed"; taskId: string; runId: number }
   | { type: "timeline.appended"; taskId: string; eventId: number }
-  | { type: "run.log"; taskId: string; runId: number; line: RunLogLine };
+  | { type: "run.log"; taskId: string; runId: number; line: RunLogLine }
+  /** A settings page's data changed, on this device or another, so open screens fetch it again. */
+  | { type: "settings.changed"; scope: SettingsScope };
 
 // ---------- drafting a task from its ticket ----------
 

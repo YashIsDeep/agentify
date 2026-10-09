@@ -10,6 +10,10 @@ export interface AppConfig {
   port: number;
   /** Extra localhost ports allowed as request Origin (e.g. the Vite dev server). */
   devOriginPorts: number[];
+  /** Where the page is served, which is the address other devices open: Vite's port in dev. Defaults to `port`. */
+  uiPort?: number;
+  /** The address remote access listens on: every interface unless WM_REMOTE_HOST names one (a Tailscale IP, say). */
+  remoteHost?: string;
   /** Used until the cap is changed in the UI, which saves it in the default workspace. */
   maxConcurrentLongRuns: number;
 }
@@ -26,10 +30,13 @@ const DEV_API_PORT = 2711;
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: { dev?: boolean } = {}): AppConfig {
   const defaultDataDir = options.dev ? join(REPO_ROOT, ".wm-data") : homeDataDir();
+  const port = positiveInt(env.WM_PORT, options.dev ? DEV_API_PORT : UI_PORT);
   return {
     dataDir: resolve(env.WM_DATA_DIR ?? defaultDataDir),
     host: "127.0.0.1",
-    port: positiveInt(env.WM_PORT, options.dev ? DEV_API_PORT : UI_PORT),
+    port,
+    uiPort: options.dev ? UI_PORT : port,
+    remoteHost: env.WM_REMOTE_HOST || "0.0.0.0",
     devOriginPorts: [UI_PORT],
     maxConcurrentLongRuns: DEFAULT_MAX_CONCURRENT_AGENTS,
   };

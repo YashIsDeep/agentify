@@ -38,6 +38,8 @@ import type { QuestionService } from "../services/questions";
 import type { RepoService } from "../services/repos";
 import type { WorkflowService } from "../services/workflows";
 import type { TicketDraftService } from "../services/ticket-draft";
+import { admittedAccess } from "../remote/access";
+import type { ServerEvents } from "../server-events";
 import { mountMcp } from "./mcp";
 import { localOnly } from "./security";
 import { serveWeb } from "./static";
@@ -55,6 +57,8 @@ export interface AppDeps {
   archiveTask(taskId: string, options?: { force?: boolean }): Promise<void>;
   /** Built web app to serve at `/`, if present. */
   webDist?: string;
+  /** Server-wide changes (workspaces, remote access) for this workspace's open streams. */
+  serverEvents?: ServerEvents;
 }
 
 const SERVER_EVENT_TYPES = new Set<InternalEvent["type"]>([
@@ -63,6 +67,7 @@ const SERVER_EVENT_TYPES = new Set<InternalEvent["type"]>([
   "run.changed",
   "timeline.appended",
   "run.log",
+  "settings.changed",
 ]);
 const runIdSchema = z.coerce.number().int().positive();
 const agentIdSchema = z.enum(AGENT_IDS);
@@ -79,8 +84,11 @@ export function createApp({
   tickets,
   archiveTask,
   webDist,
+  serverEvents,
 }: AppDeps): Hono {
   const app = new Hono();
+  /** Tells every open screen, on any device, to fetch a settings page's data again. */
+  const settingsChanged = (scope: "agents" | "connections" | "ticket-draft") => engine.publish({ type: "settings.changed", scope });
   app.use("*", localOnly({ allowedOriginPorts: [config.port, ...config.devOriginPorts] }));
 
   app.onError((err, c) => {
@@ -292,12 +300,14 @@ export function createApp({
   app.put("/api/agents/:id", async (c) => {
     const id = agentIdSchema.parse(c.req.param("id"));
     agents.setPathOverride(id, updateAgentSchema.parse(await readJson(c)).path);
+    settingsChanged("agents");
     return c.json(await agents.status(id));
   });
 
   app.put("/api/agents/:id/defaults", async (c) => {
     const id = agentIdSchema.parse(c.req.param("id"));
     await agents.setDefaults(id, agentDefaultsSchema.parse(await readJson(c)));
+    settingsChanged("agents");
     return c.json(await agents.status(id));
   });
 
@@ -310,14 +320,21 @@ export function createApp({
   app.get("/api/connection-types", (c) => c.json(connections.types()));
   app.get("/api/connections", (c) => c.json(connections.list()));
 
-  app.post("/api/connections", async (c) => c.json(connections.create(createConnectionSchema.parse(await readJson(c))), 201));
+  app.post("/api/connections", async (c) => {
+    const created = connections.create(createConnectionSchema.parse(await readJson(c)));
+    settingsChanged("connections");
+    return c.json(created, 201);
+  });
 
-  app.put("/api/connections/:id", async (c) =>
-    c.json(connections.update(c.req.param("id"), updateConnectionSchema.parse(await readJson(c)))),
-  );
+  app.put("/api/connections/:id", async (c) => {
+    const updated = connections.update(c.req.param("id"), updateConnectionSchema.parse(await readJson(c)));
+    settingsChanged("connections");
+    return c.json(updated);
+  });
 
   app.delete("/api/connections/:id", (c) => {
     connections.remove(c.req.param("id"));
+    settingsChanged("connections");
     return c.body(null, 204);
   });
 
@@ -326,7 +343,11 @@ export function createApp({
   // ---- drafting a new task's title and description from its linked ticket
   app.post("/api/tickets/draft", async (c) => c.json(await tickets.draft(draftFromTicketSchema.parse(await readJson(c)).link)));
   app.get("/api/settings/ticket-draft", (c) => c.json(tickets.getSettings()));
-  app.put("/api/settings/ticket-draft", async (c) => c.json(await tickets.saveSettings(await readJson(c))));
+  app.put("/api/settings/ticket-draft", async (c) => {
+    const saved = await tickets.saveSettings(await readJson(c));
+    settingsChanged("ticket-draft");
+    return c.json(saved);
+  });
 
   // ---- questions a running agent is blocked on
   app.get("/api/questions", (c) => c.json(questions.pending()));
@@ -341,22 +362,31 @@ export function createApp({
   mountMcp(app, questions);
 
   // ---- live updates
-  app.get("/api/events", (c) =>
-    streamSSE(c, async (stream) => {
+  app.get("/api/events", (c) => {
+    // A paired device's stream ends the moment it loses access, not whenever it next asks for something.
+    const access = admittedAccess(c.env);
+    const deviceId = access?.kind === "device" ? access.device.id : null;
+    return streamSSE(c, async (stream) => {
+      const send = (event: ServerEvent) => void stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
       const unsubscribe = engine.on((event) => {
-        if (!SERVER_EVENT_TYPES.has(event.type)) return;
-        const serverEvent = event as ServerEvent;
-        void stream.writeSSE({ event: serverEvent.type, data: JSON.stringify(serverEvent) });
+        if (SERVER_EVENT_TYPES.has(event.type)) send(event as ServerEvent);
+      });
+      let revoke = () => {};
+      const revoked = new Promise<void>((resolve) => (revoke = resolve));
+      const unsubscribeServer = serverEvents?.on((event) => {
+        if (event.type === "settings.changed") send(event);
+        else if (deviceId !== null && (event.deviceId === null || event.deviceId === deviceId)) revoke();
       });
       // Write immediately so headers flush and the client's EventSource opens without waiting for a ping.
       await stream.writeSSE({ event: "ready", data: "" });
       // The client treats ~40s of silence as a dead connection.
       const ping = setInterval(() => void stream.writeSSE({ event: "ping", data: "" }), 15_000);
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
+      await Promise.race([new Promise<void>((resolve) => stream.onAbort(resolve)), revoked]);
       clearInterval(ping);
       unsubscribe();
-    }),
-  );
+      unsubscribeServer?.();
+    });
+  });
 
   if (webDist && existsSync(join(webDist, "index.html"))) serveWeb(app, webDist);
 

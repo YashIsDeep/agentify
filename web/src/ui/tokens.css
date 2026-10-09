@@ -85,6 +85,10 @@
   --toast-text: #f2f2f7;
   --toast-error: #c7353b;
 
+  /* A QR code is dark on light in both themes: phone cameras read that most reliably. */
+  --qr-ink: #000000;
+  --qr-paper: #ffffff;
+
   --scrollbar: rgb(20 22 50 / 18%);
 
   /* Three elevations: resting cards, floating menus, dialogs. */

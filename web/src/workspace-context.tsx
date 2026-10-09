@@ -7,6 +7,8 @@ export interface WorkspaceContextValue {
   list: WorkspaceInfo[];
   select: (id: string) => void;
   manage: (action: "create" | "clone" | "rename") => void;
+  /** Fetches the workspace list again, after another screen or device changed it. */
+  refreshCatalog: () => void;
 }
 export const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
